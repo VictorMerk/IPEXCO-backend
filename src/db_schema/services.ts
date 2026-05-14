@@ -5,6 +5,7 @@ export enum ServiceType {
     PLANNER = 'PLANNER',
     EXPLAINER = 'EXPLAINER',
     PROPERTY_CHECKER = 'PROPERTY_CHECKER',
+    PLANPILOT = 'PLANPILOT',
     TESTER = 'TESTER',
     VERIFIER = 'VERIFIER',
     NONE = 'NONE'
@@ -49,4 +50,3 @@ const ServiceSchema = new Schema({
 });
 
 export const ServiceModel = mongoose.model<Service>('services', ServiceSchema);
-
