@@ -1,4 +1,4 @@
-import { any, array, boolean, nativeEnum, number, object, string, unknown, infer as zinfer } from "zod";
+import { any, array, boolean, enum as zenum, nativeEnum, number, object, string, unknown, infer as zinfer } from "zod";
 import { ExplanationRunStatusZ } from "./explanations";
 import { PlanRunStatusZ } from "./iteration_step";
 import { Action, ActionZ } from "./plan-properties/action_set";
@@ -106,3 +106,50 @@ export const PropertyCheckerResponseZ = object({
 });
 
 export type PropertyCheckerResponse = zinfer<typeof PropertyCheckerResponseZ>;
+
+export const PlanPilotEncodingZ = zenum(["exact", "bounded"]);
+export type PlanPilotEncoding = zinfer<typeof PlanPilotEncodingZ>;
+
+export const PlanPilotFacetSelectionStateZ = zenum(["neutral", "positive", "negative"]);
+
+export const PlanPilotFacetZ = object({
+	id: string(),
+	label: string(),
+	timestep: number().int().nullable(),
+	selectionState: PlanPilotFacetSelectionStateZ,
+});
+
+export type PlanPilotFacet = zinfer<typeof PlanPilotFacetZ>;
+
+export const PlanPilotSessionConfigurationZ = object({
+	horizon: number().int().positive(),
+	encoding: PlanPilotEncodingZ,
+	abstractTimeSteps: boolean(),
+});
+
+export type PlanPilotSessionConfiguration = zinfer<typeof PlanPilotSessionConfigurationZ>;
+
+export const CreatePlanPilotSessionRequestZ = object({
+	task: object({
+		domainPddl: string(),
+		problemPddl: string(),
+	}),
+	configuration: PlanPilotSessionConfigurationZ,
+	source: object({
+		system: zenum(["IPEXCO"]),
+		runId: string().optional(),
+		projectId: string().optional(),
+		planId: string().optional(),
+	}),
+});
+
+export type CreatePlanPilotSessionRequest = zinfer<typeof CreatePlanPilotSessionRequestZ>;
+
+export const CreatePlanPilotSessionResponseZ = object({
+	sessionId: string(),
+	status: zenum(["ready"]),
+	configuration: PlanPilotSessionConfigurationZ,
+	facets: array(PlanPilotFacetZ),
+});
+
+export type CreatePlanPilotSessionResponse = zinfer<typeof CreatePlanPilotSessionResponseZ>;

@@ -30,6 +30,7 @@ import { domainSpecificationRouter } from './routes/domain_specification';
 import { promptRouter } from './routes/prompt';
 import { serviceRouter } from './routes/services';
 import { planRouter } from './routes/plan';
+import { planPilotRouter } from './routes/planpilot';
 
 
 
@@ -100,6 +101,7 @@ app.use('/api/user-study-execution', userStudyExecutionRouter);
 app.use('/api/demo', demoRouter);
 app.use('/api/iteration-step', iterationStepRouter);
 app.use('/api/plan', planRouter);
+app.use('/api/planpilot', planPilotRouter);
 
 app.use('/api/plan-property', planPropertyRouter);
 
