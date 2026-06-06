@@ -125,11 +125,23 @@ export type PlanPilotFacetSelectionState = zinfer<
   typeof PlanPilotFacetSelectionStateZ
 >;
 
+export const PlanPilotFacetMetricPairZ = object({
+  positive: number().nullable(),
+  negative: number().nullable(),
+});
+
+export const PlanPilotFacetMetricsZ = object({
+  solution: PlanPilotFacetMetricPairZ,
+  facets: PlanPilotFacetMetricPairZ,
+});
+
 export const PlanPilotFacetZ = object({
   id: string(),
   label: string(),
   timestep: number().int().nullable(),
   selectionState: PlanPilotFacetSelectionStateZ,
+  reduction: PlanPilotFacetMetricsZ.optional(),
+  remaining: PlanPilotFacetMetricsZ.optional(),
 });
 
 export type PlanPilotFacet = zinfer<typeof PlanPilotFacetZ>;
@@ -166,6 +178,9 @@ export const CreatePlanPilotSessionResponseZ = object({
   sessionId: string(),
   status: zenum(["ready"]),
   configuration: PlanPilotSessionConfigurationZ,
+  createdAt: string(),
+  lastAccessAt: string(),
+  expiresAt: string(),
   facets: array(PlanPilotFacetZ),
 });
 
@@ -218,7 +233,7 @@ export const PlanPilotSolutionZ = object({
 
 export const PlanPilotQueryResultZ = object({
   type: PlanPilotQueryTypeZ,
-  value: string().optional(),
+  value: number().optional(),
   facets: array(PlanPilotFacetZ).optional(),
   solutions: array(PlanPilotSolutionZ).optional(),
 });
@@ -241,6 +256,19 @@ export const QueryPlanPilotSessionResponseZ = object({
 
 export type QueryPlanPilotSessionResponse = zinfer<
   typeof QueryPlanPilotSessionResponseZ
+>;
+
+export const GetPlanPilotSessionResponseZ = object({
+  sessionId: string(),
+  status: zenum(["ready"]),
+  configuration: PlanPilotSessionConfigurationZ,
+  createdAt: string(),
+  lastAccessAt: string(),
+  expiresAt: string(),
+});
+
+export type GetPlanPilotSessionResponse = zinfer<
+  typeof GetPlanPilotSessionResponseZ
 >;
 
 export const StopPlanPilotSessionResponseZ = object({

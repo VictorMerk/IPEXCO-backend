@@ -4,6 +4,7 @@ import { PlanPilotSessionConfigurationZ } from "./service_communication";
 
 export enum PlanPilotRunStatus {
   CREATED = "CREATED",
+  STARTING = "STARTING",
   READY = "READY",
   FAILED = "FAILED",
   EXPIRED = "EXPIRED",
@@ -18,7 +19,7 @@ export const PlanPilotRunZ = object({
   user: string(),
   plan: string(),
   service: string(),
-  externalSessionId: string(),
+  externalSessionId: string().nullish(),
   status: PlanPilotRunStatusZ,
   configuration: PlanPilotSessionConfigurationZ,
   error: string().nullish(),
@@ -55,7 +56,7 @@ const PlanPilotRunSchema = new Schema(
       required: true,
       index: true,
     },
-    externalSessionId: { type: String, required: true, index: true },
+    externalSessionId: { type: String, required: false, index: true },
     status: {
       type: String,
       required: true,

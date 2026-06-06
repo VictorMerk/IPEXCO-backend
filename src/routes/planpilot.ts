@@ -18,6 +18,7 @@ import { Service, ServiceModel, ServiceType } from "../db_schema/services";
 import { AuthenticatedRequest, authAny } from "../middleware/auth";
 import {
   createPlanPilotSession,
+  getPlanPilotSession,
   listPlanPilotFacets,
   PlanPilotClientError,
   queryPlanPilotSession,
@@ -72,9 +73,18 @@ planPilotRouter.post(
         return;
       }
 
-      const services = await getSelectedPlanPilotServices(
+      const selectedServices = await getSelectedPlanPilotServices(
         project.settings.services.services,
       );
+      const services = selectedServices.filter((service) =>
+        isServiceInProjectDomain(service, project.domain),
+      );
+      if (selectedServices.length > 0 && services.length === 0) {
+        res.status(400).send({
+          message: "No selected PlanPilot service matches project domain.",
+        });
+        return;
+      }
       if (services.length === 0) {
         res.status(400).send({ message: "No PlanPilot service selected." });
         return;
@@ -90,38 +100,91 @@ planPilotRouter.post(
       const [domainPddl, problemPddl] = toPDDL(
         project.baseTask.model as PDDLPlanningModel,
       );
-      const session = await createPlanPilotSession(services[0], {
-        task: { domainPddl, problemPddl },
-        configuration: {
-          horizon: request.horizon,
-          encoding: request.encoding,
-          abstractTimeSteps: request.abstractTimeSteps,
-        },
-        source: {
-          system: "IPEXCO",
-          projectId: project._id,
-          planId: plan._id,
-        },
-      });
-
+      const configuration = {
+        horizon: request.horizon,
+        encoding: request.encoding,
+        abstractTimeSteps: request.abstractTimeSteps,
+      };
       const run = await PlanPilotRunModel.create({
         project: project._id,
         user: req.user._id,
         plan: plan._id,
         service: services[0]._id,
-        externalSessionId: session.sessionId,
-        status: PlanPilotRunStatus.READY,
-        configuration: session.configuration,
+        status: PlanPilotRunStatus.STARTING,
+        configuration,
       });
 
-      res.status(201).send({
-        runId: run._id,
-        externalSessionId: session.sessionId,
-        status: run.status,
-        configuration: session.configuration,
-        facets: session.facets,
+      try {
+        const session = await createPlanPilotSession(services[0], {
+          task: { domainPddl, problemPddl },
+          configuration,
+          source: {
+            system: "IPEXCO",
+            runId: run._id,
+            projectId: project._id,
+            planId: plan._id,
+          },
+        });
+
+        run.externalSessionId = session.sessionId;
+        run.status = PlanPilotRunStatus.READY;
+        run.configuration = session.configuration;
+        run.expiresAt = parseExpiresAt(session.expiresAt);
+        await run.save();
+
+        res.status(201).send({
+          runId: run._id,
+          externalSessionId: session.sessionId,
+          status: run.status,
+          configuration: session.configuration,
+          expiresAt: run.expiresAt,
+          facets: session.facets,
+        });
+      } catch (error) {
+        run.status = PlanPilotRunStatus.FAILED;
+        run.error = sanitizePlanPilotError(error);
+        await run.save();
+        throw error;
+      }
+    } catch (error) {
+      sendPlanPilotRouteError(res, error);
+    }
+  },
+);
+
+planPilotRouter.get(
+  "/sessions/:id",
+  authAny,
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const context = await getRunContext(req, res, { allowTerminal: true });
+      if (!context) {
+        return;
+      }
+
+      if (
+        context.run.status === PlanPilotRunStatus.FAILED ||
+        context.run.status === PlanPilotRunStatus.STOPPED ||
+        context.run.status === PlanPilotRunStatus.EXPIRED
+      ) {
+        res.status(200).send(serializeRun(context.run));
+        return;
+      }
+
+      const session = await getPlanPilotSession(
+        context.service,
+        context.run.externalSessionId!,
+      );
+      context.run.expiresAt = parseExpiresAt(session.expiresAt);
+      await context.run.save();
+
+      res.status(200).send({
+        ...serializeRun(context.run),
+        externalStatus: session.status,
+        expiresAt: context.run.expiresAt,
       });
     } catch (error) {
+      await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
     }
   },
@@ -146,10 +209,11 @@ planPilotRouter.post(
 
       const response = await listPlanPilotFacets(
         context.service,
-        context.run.externalSessionId,
+        context.run.externalSessionId!,
       );
       res.status(200).send({ runId: context.run._id, facets: response.facets });
     } catch (error) {
+      await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
     }
   },
@@ -175,11 +239,12 @@ planPilotRouter.post(
 
       const response = await selectPlanPilotFacet(
         context.service,
-        context.run.externalSessionId,
+        context.run.externalSessionId!,
         requestData.data,
       );
       res.status(200).send({ runId: context.run._id, facets: response.facets });
     } catch (error) {
+      await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
     }
   },
@@ -203,11 +268,12 @@ planPilotRouter.post(
 
       const response = await queryPlanPilotSession(
         context.service,
-        context.run.externalSessionId,
+        context.run.externalSessionId!,
         requestData.data,
       );
       res.status(200).send({ runId: context.run._id, result: response.result });
     } catch (error) {
+      await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
     }
   },
@@ -225,7 +291,7 @@ planPilotRouter.delete(
 
       const response = await stopPlanPilotSession(
         context.service,
-        context.run.externalSessionId,
+        context.run.externalSessionId!,
       );
       context.run.status = PlanPilotRunStatus.STOPPED;
       await context.run.save();
@@ -235,6 +301,7 @@ planPilotRouter.delete(
         status: context.run.status,
       });
     } catch (error) {
+      await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
     }
   },
@@ -255,7 +322,11 @@ async function getSelectedPlanPilotServices(
   return services;
 }
 
-async function getRunContext(req: AuthenticatedRequest, res: express.Response) {
+async function getRunContext(
+  req: AuthenticatedRequest,
+  res: express.Response,
+  options: { allowTerminal?: boolean } = {},
+) {
   if (!req.user) {
     res.status(401).send();
     return null;
@@ -270,8 +341,23 @@ async function getRunContext(req: AuthenticatedRequest, res: express.Response) {
     return null;
   }
 
-  if (run.status === PlanPilotRunStatus.STOPPED) {
+  if (!options.allowTerminal && run.status === PlanPilotRunStatus.STOPPED) {
     res.status(409).send({ message: "PlanPilot run is already stopped." });
+    return null;
+  }
+
+  if (!options.allowTerminal && run.status === PlanPilotRunStatus.EXPIRED) {
+    res.status(410).send({ message: "PlanPilot run has expired." });
+    return null;
+  }
+
+  if (!options.allowTerminal && run.status === PlanPilotRunStatus.FAILED) {
+    res.status(409).send({ message: "PlanPilot run has failed." });
+    return null;
+  }
+
+  if (!options.allowTerminal && !run.externalSessionId) {
+    res.status(409).send({ message: "PlanPilot run is not ready." });
     return null;
   }
 
@@ -293,6 +379,77 @@ function isEmptyObject(value: unknown): boolean {
     !Array.isArray(value) &&
     Object.keys(value).length === 0,
   );
+}
+
+function isServiceInProjectDomain(
+  service: Service,
+  projectDomainId: unknown,
+): boolean {
+  if (!service.domainId) {
+    return true;
+  }
+  if (!projectDomainId) {
+    return false;
+  }
+  return String(service.domainId) === String(projectDomainId);
+}
+
+function parseExpiresAt(value: string | undefined): Date | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function sanitizePlanPilotError(error: unknown): string {
+  if (error instanceof PlanPilotClientError) {
+    return error.message;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "PlanPilot request failed.";
+}
+
+async function markExpiredIfNeeded(
+  runId: string,
+  userId: unknown,
+  error: unknown,
+): Promise<void> {
+  if (
+    !(error instanceof PlanPilotClientError) ||
+    error.code !== "SESSION_EXPIRED" ||
+    !userId
+  ) {
+    return;
+  }
+  await PlanPilotRunModel.updateOne(
+    { _id: runId, user: userId },
+    { status: PlanPilotRunStatus.EXPIRED },
+  );
+}
+
+function serializeRun(run: {
+  _id: unknown;
+  externalSessionId?: string | null;
+  status: PlanPilotRunStatus;
+  configuration: unknown;
+  error?: string | null;
+  expiresAt?: Date | null;
+  createdAt?: Date;
+  updatedAt?: Date;
+}) {
+  return {
+    runId: run._id,
+    externalSessionId: run.externalSessionId,
+    status: run.status,
+    configuration: run.configuration,
+    error: run.error,
+    expiresAt: run.expiresAt,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  };
 }
 
 function sendPlanPilotRouteError(res: express.Response, error: unknown): void {

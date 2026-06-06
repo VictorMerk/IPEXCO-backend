@@ -2,6 +2,8 @@ import {
   CreatePlanPilotSessionRequest,
   CreatePlanPilotSessionResponse,
   CreatePlanPilotSessionResponseZ,
+  GetPlanPilotSessionResponse,
+  GetPlanPilotSessionResponseZ,
   ListPlanPilotFacetsResponse,
   ListPlanPilotFacetsResponseZ,
   QueryPlanPilotSessionRequest,
@@ -49,6 +51,19 @@ export async function listPlanPilotFacets(
     `/api/sessions/${encodeURIComponent(externalSessionId)}/facets/list`,
     {},
     ListPlanPilotFacetsResponseZ,
+  );
+}
+
+export async function getPlanPilotSession(
+  service: Service,
+  externalSessionId: string,
+): Promise<GetPlanPilotSessionResponse> {
+  return requestPlanPilot(
+    service,
+    `/api/sessions/${encodeURIComponent(externalSessionId)}`,
+    "GET",
+    undefined,
+    GetPlanPilotSessionResponseZ,
   );
 }
 
@@ -103,7 +118,7 @@ async function postPlanPilot<T>(
 async function requestPlanPilot<T>(
   service: Service,
   path: string,
-  method: "POST" | "DELETE",
+  method: "GET" | "POST" | "DELETE",
   payload: unknown,
   schema: { parse: (data: unknown) => T },
 ): Promise<T> {
