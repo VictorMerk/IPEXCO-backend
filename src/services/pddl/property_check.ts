@@ -30,6 +30,14 @@ export async function checkProperties(iterationStep: IterationStep & Document) {
     const plan_properties = (await PlanPropertyModel.find({ project: iterationStep.project}) as PlanProperty[]).
     filter(pp => pp._id && (iterationStep.hardGoals.includes(pp._id) || iterationStep.softGoals.includes(pp._id)));
 
+    if (plan_properties.length === 0) {
+        iterationStep.status = StepStatus.SOLVABLE;
+        iterationStep.plan.status = PlanRunStatus.SOLVED;
+        iterationStep.plan.satisfied_properties = [];
+        await iterationStep.save();
+        return;
+    }
+
     let payload: PropertyCheckerRequest = {
         callback: baseURL + '/api/planner/plan-step/checked/' + iterationStep._id,
         id: iterationStep._id,

@@ -17,7 +17,7 @@ export const PlanPilotRunZ = object({
   _id: string(),
   project: string(),
   user: string(),
-  plan: string(),
+  iterationStep: string(),
   service: string(),
   externalSessionId: string().nullish(),
   status: PlanPilotRunStatusZ,
@@ -44,9 +44,9 @@ const PlanPilotRunSchema = new Schema(
       required: true,
       index: true,
     },
-    plan: {
+    iterationStep: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "plans",
+      ref: "iteration-step",
       required: true,
       index: true,
     },
@@ -74,6 +74,7 @@ const PlanPilotRunSchema = new Schema(
 );
 
 PlanPilotRunSchema.index({ project: 1, user: 1, service: 1 });
+PlanPilotRunSchema.index({ iterationStep: 1, user: 1 });
 PlanPilotRunSchema.index({ externalSessionId: 1, service: 1 });
 
 export const PlanPilotRunModel = mongoose.model<PlanPilotRun>(

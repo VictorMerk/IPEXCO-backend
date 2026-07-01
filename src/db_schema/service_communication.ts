@@ -166,7 +166,7 @@ export const CreatePlanPilotSessionRequestZ = object({
     system: zenum(["IPEXCO"]),
     runId: string().optional(),
     projectId: string().optional(),
-    planId: string().optional(),
+    iterationStepId: string().optional(),
   }),
 });
 

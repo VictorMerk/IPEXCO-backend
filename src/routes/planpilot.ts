@@ -2,8 +2,7 @@ import express from "express";
 import { boolean, object, string } from "zod";
 
 import { PDDLPlanningModel, toPDDL } from "../db_schema/PDDL_task";
-import { PlanRunStatus } from "../db_schema/iteration_step";
-import { PlanModel } from "../db_schema/plan";
+import { IterationStepModel, PlanRunStatus } from "../db_schema/iteration_step";
 import {
   PlanPilotRunModel,
   PlanPilotRunStatus,
@@ -29,7 +28,7 @@ import {
 export const planPilotRouter = express.Router();
 
 const StartPlanPilotSessionZ = object({
-  planId: string(),
+  iterationStepId: string(),
   horizon: PlanPilotSessionConfigurationZ.shape.horizon,
   encoding: PlanPilotSessionConfigurationZ.shape.encoding,
   abstractTimeSteps: boolean(),
@@ -52,32 +51,20 @@ planPilotRouter.post(
       }
 
       const request = requestData.data;
-      const plan = await PlanModel.findOne({
-        _id: request.planId,
-        user: req.user._id,
-      });
-
-      if (!plan) {
-        res.status(404).send({ message: "Plan not found." });
-        return;
-      }
-
-      if (plan.status !== PlanRunStatus.SOLVED) {
-        res.status(400).send({ message: "PlanPilot requires a solved plan." });
-        return;
-      }
-
-      const project = await ProjectModel.findById(plan.project);
-      if (!project) {
-        res.status(404).send({ message: "Project not found." });
+      const source = await resolvePlanPilotSource(
+        request.iterationStepId,
+        req.user._id,
+        res,
+      );
+      if (!source) {
         return;
       }
 
       const selectedServices = await getSelectedPlanPilotServices(
-        project.settings.services.services,
+        source.project.settings.services.services,
       );
       const services = selectedServices.filter((service) =>
-        isServiceInProjectDomain(service, project.domain),
+        isServiceInProjectDomain(service, source.project.domain),
       );
       if (selectedServices.length > 0 && services.length === 0) {
         res.status(400).send({
@@ -98,7 +85,7 @@ planPilotRouter.post(
       }
 
       const [domainPddl, problemPddl] = toPDDL(
-        project.baseTask.model as PDDLPlanningModel,
+        source.pddlModel,
       );
       const configuration = {
         horizon: request.horizon,
@@ -106,9 +93,9 @@ planPilotRouter.post(
         abstractTimeSteps: request.abstractTimeSteps,
       };
       const run = await PlanPilotRunModel.create({
-        project: project._id,
+        project: source.project._id,
         user: req.user._id,
-        plan: plan._id,
+        iterationStep: source.iterationStepId,
         service: services[0]._id,
         status: PlanPilotRunStatus.STARTING,
         configuration,
@@ -121,8 +108,8 @@ planPilotRouter.post(
           source: {
             system: "IPEXCO",
             runId: run._id,
-            projectId: project._id,
-            planId: plan._id,
+            projectId: source.project._id,
+            iterationStepId: source.iterationStepId,
           },
         });
 
@@ -320,6 +307,39 @@ async function getSelectedPlanPilotServices(
   }
 
   return services;
+}
+
+async function resolvePlanPilotSource(
+  iterationStepId: string,
+  userId: unknown,
+  res: express.Response,
+) {
+  const step = await IterationStepModel.findOne({
+    _id: iterationStepId,
+    user: userId,
+  });
+
+  if (!step) {
+    res.status(404).send({ message: "Iteration step not found." });
+    return null;
+  }
+
+  if (step.plan?.status !== PlanRunStatus.SOLVED) {
+    res.status(400).send({ message: "PlanPilot requires a solved iteration-step plan." });
+    return null;
+  }
+
+  const project = await ProjectModel.findById(step.project);
+  if (!project) {
+    res.status(404).send({ message: "Project not found." });
+    return null;
+  }
+
+  return {
+    project,
+    iterationStepId: step._id,
+    pddlModel: step.task.model as PDDLPlanningModel,
+  };
 }
 
 async function getRunContext(

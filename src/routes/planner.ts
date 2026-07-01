@@ -3,7 +3,7 @@ import { authAny, authService } from '../middleware/auth';
 
 import { DemoModel } from '../db_schema/demo';
 import { IterationStepModel, PlanRunStatus, StepStatus } from '../db_schema/iteration_step';
-import { PlanProperty, PlanPropertyModel } from '../db_schema/plan-properties/plan_property';
+import { GoalType, PlanProperty, PlanPropertyModel } from '../db_schema/plan-properties/plan_property';
 import { Project, ProjectModel } from '../db_schema/project';
 import { PlannerRequest, PlannerResponse, PropertyCheckerResponseZ, PropertyCheckRunStatus } from '../db_schema/service_communication';
 import { Service, ServiceModel, ServiceType } from '../db_schema/services';
@@ -36,13 +36,14 @@ plannerRouter.post('/plan-step/:id', authAny, async (req: any, res) => {
         const plan_properties = await PlanPropertyModel.find({ project: iterationStep.project}) as PlanProperty[];
 
         const enforced_goals = plan_properties.filter(pp => !pp._id ? false : iterationStep.hardGoals.includes(pp._id?.toString()));
+        const planner_goals = enforced_goals.length > 0 ? enforced_goals : taskGoalProperties(iterationStep);
 
         const baseURL = process.env.BASE_URL || 'http://host.docker.internal:3000'
         let payload: PlannerRequest = {
             callback:baseURL + '/api/planner/plan-step/finished/' + refId,
             model: model,
-            goals: enforced_goals,
-            hardGoals: enforced_goals.map(pp => pp._id).filter(pp => pp !== undefined),
+            goals: planner_goals,
+            hardGoals: planner_goals.map(pp => pp._id).filter(pp => pp !== undefined),
             softGoals: [],
             id: iterationStep._id
         }
@@ -92,6 +93,29 @@ plannerRouter.post('/plan-step/:id', authAny, async (req: any, res) => {
         res.status(404).send(ex.message);
     }
 });
+
+function taskGoalProperties(iterationStep: any): PlanProperty[] {
+    const goalFacts = iterationStep.task?.model?.goal ?? [];
+    return goalFacts.map((fact: { name: string; arguments: string[] }, index: number) => {
+        const formula = `${fact.name}(${(fact.arguments ?? []).join(',')})`;
+        return {
+            _id: `__pddl_goal_${index}`,
+            project: iterationStep.project?.toString(),
+            name: formula,
+            definition: null,
+            type: GoalType.goalFact,
+            formula,
+            actionSets: [],
+            naturalLanguageDescription: `PDDL task goal ${formula}.`,
+            isUsed: true,
+            globalHardGoal: true,
+            utility: 1,
+            color: '#2f6f73',
+            icon: 'flag',
+            class: 'pddl-task-goal',
+        } as PlanProperty;
+    });
+}
 
 
 plannerRouter.post('/plan-step/finished/:id', authService, async (req: any, res) => {
