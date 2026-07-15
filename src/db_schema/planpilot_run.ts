@@ -20,6 +20,8 @@ export const PlanPilotRunZ = object({
   iterationStep: string(),
   service: string(),
   externalSessionId: string().nullish(),
+  startKey: string().nullish(),
+  sourceFingerprint: string().length(64).optional(),
   status: PlanPilotRunStatusZ,
   configuration: PlanPilotSessionConfigurationZ,
   error: string().nullish(),
@@ -57,6 +59,9 @@ const PlanPilotRunSchema = new Schema(
       index: true,
     },
     externalSessionId: { type: String, required: false, index: true },
+    // The partial unique index prevents duplicate in-flight session starts.
+    startKey: { type: String, required: false },
+    sourceFingerprint: { type: String, required: false, index: true },
     status: {
       type: String,
       required: true,
@@ -76,6 +81,14 @@ const PlanPilotRunSchema = new Schema(
 PlanPilotRunSchema.index({ project: 1, user: 1, service: 1 });
 PlanPilotRunSchema.index({ iterationStep: 1, user: 1 });
 PlanPilotRunSchema.index({ externalSessionId: 1, service: 1 });
+PlanPilotRunSchema.index(
+  { startKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { startKey: { $type: "string" } },
+  },
+);
+PlanPilotRunSchema.index({ status: 1, expiresAt: 1 });
 
 export const PlanPilotRunModel = mongoose.model<PlanPilotRun>(
   "planpilot-runs",

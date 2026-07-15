@@ -47,7 +47,7 @@ const PlanSchema = new Schema({
 
 
 export const IterationStepBaseZ = object({
-	name: string(),
+	name: string().trim().min(1),
 	project: string(),
 	status: StepStatusZ,
 	hardGoals: array(string()),

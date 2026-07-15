@@ -109,12 +109,18 @@ export function toPDDL(model: PDDLPlanningModel, with_goals=true): string[] {
     p += "(:objects \n" + model.objects.map(o => '\t' + o.name + " - " + o.type).join("\n") + "\n)\n";
 
     p += "(:init\n " + model.initial.map(
-        f => "\t(" + f.name + ' ' + f.arguments.join(" ") + ")").join("\n") 
+        f => "value" in f
+            ? `\t(= (${f.name} ${f.arguments.join(" ")}) ${f.value})`
+            : f.negated
+                ? `\t(not (${f.name} ${f.arguments.join(" ")}))`
+                : `\t(${f.name} ${f.arguments.join(" ")})`).join("\n")
         + "\n)\n";
 
     if(with_goals){
         p += "(:goal (and \n" + 
-            model.goal.map(p => "\t(" + p.name + ' ' + p.arguments.join(" ") + ")").join("\n") 
+            model.goal.map(f => f.negated
+                ? `\t(not (${f.name} ${f.arguments.join(" ")}))`
+                : `\t(${f.name} ${f.arguments.join(" ")})`).join("\n")
             + "))\n";
     }
     else {
@@ -124,6 +130,5 @@ export function toPDDL(model: PDDLPlanningModel, with_goals=true): string[] {
 
         return [d,p];
 }   
-
 
 

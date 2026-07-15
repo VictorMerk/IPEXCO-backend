@@ -1,15 +1,20 @@
 import express from 'express';
-import { string } from 'zod';
+import { object, string } from 'zod';
 import { Demo, DemoModel } from '../db_schema/demo';
 import { ExplanationRunStatus } from '../db_schema/explanations';
 import { IterationStepBaseZ, IterationStepModel, IterationStepZ, PlanRunStatus, StepStatus } from '../db_schema/iteration_step';
 import { Project, ProjectModel } from '../db_schema/project';
 import { Service, ServiceModel, ServiceType } from '../db_schema/services';
 import { auth, authAny, AuthenticatedRequest } from '../middleware/auth';
+import { PlanPilotRunCleanupError, removePlanPilotRuns } from '../services/planpilot-run-cleanup';
 import { callServices } from '../services/utils';
 
 
 export const iterationStepRouter = express.Router();
+
+const CancelIterationStepZ = object({
+    id: string().regex(/^[a-f\d]{24}$/i),
+});
 
 iterationStepRouter.get('/', authAny, async (req: any, res) => {
 
@@ -32,10 +37,14 @@ iterationStepRouter.get('/', authAny, async (req: any, res) => {
 
 });
 
-iterationStepRouter.get('/:id', authAny, async (req, res) => {
+iterationStepRouter.get('/:id', authAny, async (req: AuthenticatedRequest, res) => {
     try{
+        if (!req.user) {
+            res.status(401).send();
+            return;
+        }
         const id =  req.params.id;
-        const step = await IterationStepModel.findOne({ _id: id});
+        const step = await IterationStepModel.findOne({ _id: id, user: req.user._id });
 
         if (!step) { 
             res.status(404).send({ message: 'No iteration step found.' });
@@ -58,7 +67,15 @@ iterationStepRouter.post('', authAny, async (req: AuthenticatedRequest, res) => 
             return;
         }
         console.log("create iter step");
-        const iterStepBaseData = IterationStepBaseZ.parse(req.body);
+        const parsedStep = IterationStepBaseZ.safeParse(req.body);
+        if (!parsedStep.success) {
+            res.status(400).send({
+                message: 'Invalid iteration step.',
+                issues: parsedStep.error.issues,
+            });
+            return;
+        }
+        const iterStepBaseData = parsedStep.data;
         let iterStepData = {
             ...iterStepBaseData,
             user: req.user._id,
@@ -91,20 +108,33 @@ iterationStepRouter.post('', authAny, async (req: AuthenticatedRequest, res) => 
     }
     catch (ex) {
         console.log(ex);
-        res.status(500);
+        res.status(500).send();
     }
 
 });
 
 
-iterationStepRouter.post('/cancel', authAny, async (req, res) => {
+iterationStepRouter.post('/cancel', authAny, async (req: AuthenticatedRequest, res) => {
 
     try {
 
-        const id = string().parse(req.body);
+        if (!req.user) {
+            res.status(401).send();
+            return;
+        }
+
+        const requestData = CancelIterationStepZ.safeParse(req.body);
+        if (!requestData.success) {
+            res.status(400).send({ message: 'Invalid iteration-step cancellation request.' });
+            return;
+        }
+        const id = requestData.data.id;
         console.log('Cancel: ' + id);
 
-        const step = await IterationStepModel.findById(id);
+        const step = await IterationStepModel.findOne({
+            _id: id,
+            user: req.user._id,
+        });
 
         if (!step) {
             res.status(404).send({ message: 'No step found.' });
@@ -123,7 +153,10 @@ iterationStepRouter.post('/cancel', authAny, async (req, res) => {
         await step.save();
 
         if(forwardCancelToPlanningService){
-            let project = await ProjectModel.findById(step.project) as Project;
+            let project = await ProjectModel.findOne({
+                _id: step.project,
+                user: req.user._id,
+            }) as Project;
             if(!project){
                 project = await DemoModel.findById(step.project) as Project;
             }
@@ -163,21 +196,23 @@ iterationStepRouter.post('/cancel', authAny, async (req, res) => {
         }
 
     
-        res.send({
-            data: {canceled: true}
-        });
+        res.send(true);
     } catch (ex) {
-        res.status(500);
+        res.status(500).send();
     }
 
 });
 
 
 
-iterationStepRouter.put('/:id', authAny, async (req, res) => {
+iterationStepRouter.put('/:id', authAny, async (req: AuthenticatedRequest, res) => {
     try {
+        if (!req.user) {
+            res.status(401).send();
+            return;
+        }
         const refId = req.params.id;
-        const step = await IterationStepModel.findOne({ _id: refId});
+        const step = await IterationStepModel.findOne({ _id: refId, user: req.user._id });
 
         if (!step) {
             res.status(404).send('update step failed');
@@ -193,27 +228,48 @@ iterationStepRouter.put('/:id', authAny, async (req, res) => {
         res.send(step);
 
     } catch (ex) {
-        res.status(500);
+        res.status(500).send();
     }
 
 });
 
 
-iterationStepRouter.delete('/:id', auth, async (req, res) => {
+iterationStepRouter.delete('/:id', auth, async (req: AuthenticatedRequest, res) => {
 
     try {
-        const result = await IterationStepModel.deleteOne({ _id: req.params.id });
+        if (!req.user) {
+            res.status(401).send();
+            return;
+        }
+        const stepFilter = {
+            _id: req.params.id,
+            user: req.user._id,
+        };
+        const step = await IterationStepModel.findOne(stepFilter);
 
-        if (!result) {
+        if (!step) {
+            res.status(404).send({ message: 'No step found.' });
+            return;
+        }
+
+        await removePlanPilotRuns({
+            userId: req.user._id,
+            iterationStepId: step._id,
+        });
+        const result = await IterationStepModel.deleteOne(stepFilter);
+
+        if (result.deletedCount !== 1) {
             res.status(404).send({ message: 'No step found.' });
             return;
         }
     
-        res.send(result.deletedCount === 1);
+        res.send(true);
     } catch (ex) {
-        res.status(500);
+        if (ex instanceof PlanPilotRunCleanupError) {
+            res.status(ex.status).send({ message: ex.message });
+            return;
+        }
+        res.status(500).send();
     }
 
 });
-
-

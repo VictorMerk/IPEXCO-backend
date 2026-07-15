@@ -6,8 +6,10 @@ import {
   nativeEnum,
   number,
   object,
+  optional,
   string,
   unknown,
+  ZodIssueCode,
   infer as zinfer,
 } from "zod";
 import { ExplanationRunStatusZ } from "./explanations";
@@ -26,12 +28,14 @@ export const PlannerRequestZ = object({
 
 export type PlannerRequest = zinfer<typeof PlannerRequestZ>;
 
-export const PlannerResponseZ = object({
+const PlannerResultZ = object({
   id: string(),
   status: PlanRunStatusZ,
   actions: array(ActionZ),
   runtime: number().optional(), // in sec
 });
+
+export const PlannerResponseZ = PlannerResultZ;
 
 export type PlannerResponse = zinfer<typeof PlannerResponseZ>;
 
@@ -43,12 +47,7 @@ export const SimplePlannerRequestZ = object({
 
 export type SimplePlannerRequest = zinfer<typeof SimplePlannerRequestZ>;
 
-export const SimplePlannerResponseZ = object({
-  id: string(),
-  status: PlanRunStatusZ,
-  actions: array(ActionZ),
-  runtime: number().optional(), // in sec
-});
+export const SimplePlannerResponseZ = PlannerResultZ;
 
 export type SimplePlannerResponse = zinfer<typeof SimplePlannerResponseZ>;
 
@@ -126,8 +125,8 @@ export type PlanPilotFacetSelectionState = zinfer<
 >;
 
 export const PlanPilotFacetMetricPairZ = object({
-  positive: number().nullable(),
-  negative: number().nullable(),
+  positive: number().nonnegative().safe().nullable(),
+  negative: number().nonnegative().safe().nullable(),
 });
 
 export const PlanPilotFacetMetricsZ = object({
@@ -136,18 +135,76 @@ export const PlanPilotFacetMetricsZ = object({
 });
 
 export const PlanPilotFacetZ = object({
-  id: string(),
-  label: string(),
-  timestep: number().int().nullable(),
+  id: string().trim().min(1),
+  label: string().trim().min(1),
+  timestep: number().int().positive().nullable(),
   selectionState: PlanPilotFacetSelectionStateZ,
+  action: object({
+    name: string().trim().min(1),
+    arguments: array(string()),
+  }).optional(),
+  abstractTimeStep: boolean().optional(),
+  selectable: boolean().optional(),
+  facetType: optional(zenum(["plan", "selected", "implied", "optional", "empty"])),
+  parentId: optional(string().trim().min(1)),
+  impliedBy: optional(array(string().trim().min(1))),
+  causedBy: optional(string().trim().min(1)),
   reduction: PlanPilotFacetMetricsZ.optional(),
   remaining: PlanPilotFacetMetricsZ.optional(),
 });
 
 export type PlanPilotFacet = zinfer<typeof PlanPilotFacetZ>;
 
+export const PlanPilotSolutionZ = object({
+  label: string().trim().min(1),
+  facets: array(PlanPilotFacetZ),
+}).superRefine((solution, context) => {
+  const ordered = [...solution.facets].sort((left, right) => (
+    (left.timestep ?? Number.MAX_SAFE_INTEGER)
+      - (right.timestep ?? Number.MAX_SAFE_INTEGER)
+    || left.id.localeCompare(right.id)
+  ));
+
+  ordered.forEach((facet, index) => {
+    if (facet.timestep === null) {
+      context.addIssue({
+        code: ZodIssueCode.custom,
+        path: ["facets", solution.facets.indexOf(facet), "timestep"],
+        message: "Solution facets must have a concrete timestep.",
+      });
+      return;
+    }
+    if (index === 0 && facet.parentId !== undefined) {
+      context.addIssue({
+        code: ZodIssueCode.custom,
+        path: ["facets", solution.facets.indexOf(facet), "parentId"],
+        message: "The first solution facet must not have a parentId.",
+      });
+    }
+    if (index > 0) {
+      const previous = ordered[index - 1];
+      if (previous.timestep === null || previous.timestep >= facet.timestep) {
+        context.addIssue({
+          code: ZodIssueCode.custom,
+          path: ["facets", solution.facets.indexOf(facet), "timestep"],
+          message: "Solution facet timesteps must increase.",
+        });
+      }
+      if (facet.parentId !== previous.id) {
+        context.addIssue({
+          code: ZodIssueCode.custom,
+          path: ["facets", solution.facets.indexOf(facet), "parentId"],
+          message: "Solution parentId must reference the previous solution facet.",
+        });
+      }
+    }
+  });
+});
+
+export const MAX_PLANPILOT_HORIZON = 100;
+
 export const PlanPilotSessionConfigurationZ = object({
-  horizon: number().int().positive(),
+  horizon: number().int().positive().max(MAX_PLANPILOT_HORIZON),
   encoding: PlanPilotEncodingZ,
   abstractTimeSteps: boolean(),
 });
@@ -158,10 +215,11 @@ export type PlanPilotSessionConfiguration = zinfer<
 
 export const CreatePlanPilotSessionRequestZ = object({
   task: object({
-    domainPddl: string(),
-    problemPddl: string(),
+    domainPddl: string().trim().min(1).max(1_000_000),
+    problemPddl: string().trim().min(1).max(1_000_000),
   }),
   configuration: PlanPilotSessionConfigurationZ,
+  representativePlan: array(ActionZ).min(1).optional(),
   source: object({
     system: zenum(["IPEXCO"]),
     runId: string().optional(),
@@ -175,12 +233,15 @@ export type CreatePlanPilotSessionRequest = zinfer<
 >;
 
 export const CreatePlanPilotSessionResponseZ = object({
-  sessionId: string(),
+  sessionId: string().trim().min(1),
   status: zenum(["ready"]),
   configuration: PlanPilotSessionConfigurationZ,
-  createdAt: string(),
-  lastAccessAt: string(),
-  expiresAt: string(),
+  createdAt: string().datetime({ offset: true }),
+  lastAccessAt: string().datetime({ offset: true }),
+  expiresAt: string().datetime({ offset: true }),
+  hasPlan: boolean(),
+  minimumHorizon: number().int().positive().nullable(),
+  solution: PlanPilotSolutionZ.nullable(),
   facets: array(PlanPilotFacetZ),
 });
 
@@ -189,7 +250,8 @@ export type CreatePlanPilotSessionResponse = zinfer<
 >;
 
 export const ListPlanPilotFacetsResponseZ = object({
-  sessionId: string(),
+  sessionId: string().trim().min(1),
+  expiresAt: string().datetime({ offset: true }),
   facets: array(PlanPilotFacetZ),
 });
 
@@ -198,7 +260,7 @@ export type ListPlanPilotFacetsResponse = zinfer<
 >;
 
 export const SelectPlanPilotFacetRequestZ = object({
-  facetId: string(),
+  facetId: string().trim().min(1),
   selectionState: PlanPilotFacetSelectionStateZ,
   previousSelectionState: PlanPilotFacetSelectionStateZ.optional(),
 });
@@ -207,14 +269,38 @@ export type SelectPlanPilotFacetRequest = zinfer<
   typeof SelectPlanPilotFacetRequestZ
 >;
 
+export const ApplyPlanPilotFacetsRequestZ = object({
+  selections: array(SelectPlanPilotFacetRequestZ).min(1).max(50),
+}).superRefine((request, context) => {
+  const seenFacetIds = new Set<string>();
+  request.selections.forEach((selection, index) => {
+    if (seenFacetIds.has(selection.facetId)) {
+      context.addIssue({
+        code: ZodIssueCode.custom,
+        path: ["selections", index, "facetId"],
+        message: "Each facetId may occur only once.",
+      });
+    }
+    seenFacetIds.add(selection.facetId);
+  });
+});
+
+export type ApplyPlanPilotFacetsRequest = zinfer<
+  typeof ApplyPlanPilotFacetsRequestZ
+>;
+
 export const SelectPlanPilotFacetResponseZ = object({
-  sessionId: string(),
+  sessionId: string().trim().min(1),
+  expiresAt: string().datetime({ offset: true }),
   facets: array(PlanPilotFacetZ),
 });
 
 export type SelectPlanPilotFacetResponse = zinfer<
   typeof SelectPlanPilotFacetResponseZ
 >;
+
+export const ApplyPlanPilotFacetsResponseZ = SelectPlanPilotFacetResponseZ;
+export type ApplyPlanPilotFacetsResponse = SelectPlanPilotFacetResponse;
 
 export const PlanPilotQueryTypeZ = zenum([
   "facets",
@@ -226,16 +312,41 @@ export const PlanPilotQueryTypeZ = zenum([
 ]);
 export type PlanPilotQueryType = zinfer<typeof PlanPilotQueryTypeZ>;
 
-export const PlanPilotSolutionZ = object({
-  label: string(),
-  facets: array(PlanPilotFacetZ),
-});
-
 export const PlanPilotQueryResultZ = object({
   type: PlanPilotQueryTypeZ,
-  value: number().optional(),
+  value: number().int().nonnegative().safe().optional(),
   facets: array(PlanPilotFacetZ).optional(),
   solutions: array(PlanPilotSolutionZ).optional(),
+}).superRefine((result, context) => {
+  if (
+    (result.type === "facetCount" || result.type === "solutionCount") &&
+    result.value === undefined
+  ) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["value"],
+      message: `${result.type} must return value.`,
+    });
+  }
+  if (
+    (result.type === "facets" ||
+      result.type === "facetReduction" ||
+      result.type === "solutionReduction") &&
+    result.facets === undefined
+  ) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["facets"],
+      message: `${result.type} must return facets.`,
+    });
+  }
+  if (result.type === "solution" && result.solutions === undefined) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["solutions"],
+      message: "solution must return solutions.",
+    });
+  }
 });
 
 export type PlanPilotQueryResult = zinfer<typeof PlanPilotQueryResultZ>;
@@ -243,6 +354,14 @@ export type PlanPilotQueryResult = zinfer<typeof PlanPilotQueryResultZ>;
 export const QueryPlanPilotSessionRequestZ = object({
   type: PlanPilotQueryTypeZ,
   solutionNumber: number().int().positive().optional(),
+}).superRefine((request, context) => {
+  if (request.type !== "solution" && request.solutionNumber !== undefined) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["solutionNumber"],
+      message: "solutionNumber is only supported for solution queries.",
+    });
+  }
 });
 
 export type QueryPlanPilotSessionRequest = zinfer<
@@ -250,7 +369,8 @@ export type QueryPlanPilotSessionRequest = zinfer<
 >;
 
 export const QueryPlanPilotSessionResponseZ = object({
-  sessionId: string(),
+  sessionId: string().trim().min(1),
+  expiresAt: string().datetime({ offset: true }),
   result: PlanPilotQueryResultZ,
 });
 
@@ -259,12 +379,15 @@ export type QueryPlanPilotSessionResponse = zinfer<
 >;
 
 export const GetPlanPilotSessionResponseZ = object({
-  sessionId: string(),
+  sessionId: string().trim().min(1),
   status: zenum(["ready"]),
   configuration: PlanPilotSessionConfigurationZ,
-  createdAt: string(),
-  lastAccessAt: string(),
-  expiresAt: string(),
+  createdAt: string().datetime({ offset: true }),
+  lastAccessAt: string().datetime({ offset: true }),
+  expiresAt: string().datetime({ offset: true }),
+  hasPlan: boolean(),
+  minimumHorizon: number().int().positive().nullable(),
+  solution: PlanPilotSolutionZ.nullable(),
 });
 
 export type GetPlanPilotSessionResponse = zinfer<
@@ -272,7 +395,7 @@ export type GetPlanPilotSessionResponse = zinfer<
 >;
 
 export const StopPlanPilotSessionResponseZ = object({
-  sessionId: string(),
+  sessionId: string().trim().min(1),
   status: zenum(["stopped"]),
 });
 

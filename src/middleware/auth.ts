@@ -21,19 +21,18 @@ export interface AuthenticatedRequest extends Request{
 // }
 
 export const authAny = async(req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (! req.header('Authorization')) {
-        console.log(errorMessage)
-        res.status(401).send({ error: errorMessage });
-        return;
-    }
-
-    const token: string | undefined = req.header('Authorization')?.replace('Bearer ', '');
-    if (token === undefined) {
-        res.status(401).send({ error: errorMessage });
-        return;
-    }
-    const data: User = jwt.verify(token, environment.jwtKey) as User;
     try {
+        if (! req.header('Authorization')) {
+            res.status(401).send({ error: errorMessage });
+            return;
+        }
+
+        const token: string | undefined = req.header('Authorization')?.replace('Bearer ', '');
+        if (token === undefined) {
+            res.status(401).send({ error: errorMessage });
+            return;
+        }
+        const data: User = jwt.verify(token, environment.jwtKey) as User;
         const user = await UserModel.findOne({ _id: data._id, 'tokens.token': token });
         if (!user) {
             res.status(401).send({ error: errorMessage });
@@ -50,19 +49,18 @@ export const authAny = async(req: AuthenticatedRequest, res: Response, next: Nex
 
 
 export const auth = async(req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (! req.header('Authorization')) {
-        console.log(errorMessage)
-        res.status(401).send({ error: errorMessage });
-        return;
-    }
-
-    const token: string | undefined = req.header('Authorization')?.replace('Bearer ', '');
-    if (token === undefined) {
-        res.status(401).send({ error: errorMessage });
-        return;
-    }
-    const data: User = jwt.verify(token, environment.jwtKey) as User;
     try {
+        if (! req.header('Authorization')) {
+            res.status(401).send({ error: errorMessage });
+            return;
+        }
+
+        const token: string | undefined = req.header('Authorization')?.replace('Bearer ', '');
+        if (token === undefined) {
+            res.status(401).send({ error: errorMessage });
+            return;
+        }
+        const data: User = jwt.verify(token, environment.jwtKey) as User;
         const user = await UserModel.findOne({ _id: data._id, 'tokens.token': token });
         if (!user) {
             res.status(401).send({ error: errorMessage });
@@ -83,19 +81,18 @@ export const auth = async(req: AuthenticatedRequest, res: Response, next: NextFu
 
 
 export const authAdmin = async(req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (! req.header('Authorization')) {
-        console.log(errorMessage)
-        res.status(401).send({ error: errorMessage });
-        return;
-    }
-
-    const token: string | undefined = req.header('Authorization')?.replace('Bearer ', '');
-    if (token === undefined) {
-        res.status(401).send({ error: errorMessage });
-        return;
-    }
-    const data: User = jwt.verify(token, environment.jwtKey) as User;
     try {
+        if (! req.header('Authorization')) {
+            res.status(401).send({ error: errorMessage });
+            return;
+        }
+
+        const token: string | undefined = req.header('Authorization')?.replace('Bearer ', '');
+        if (token === undefined) {
+            res.status(401).send({ error: errorMessage });
+            return;
+        }
+        const data: User = jwt.verify(token, environment.jwtKey) as User;
         const user = await UserModel.findOne({ _id: data._id, 'tokens.token': token });
         if (!user) {
             res.status(401).send({ error: errorMessage });
@@ -116,18 +113,18 @@ export const authAdmin = async(req: AuthenticatedRequest, res: Response, next: N
 
 
 export const authForward = async(req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (! req.header('Authorization')) {
-        next();
-        return;
-    }
-
-    const token: string | undefined = req.header('Authorization')?.replace('Bearer ', '');
-    if (token === undefined) {
-        res.status(401).send({ error: errorMessage });
-        return;
-    }
-    const data: User = jwt.verify(token, environment.jwtKey) as User;
     try {
+        if (! req.header('Authorization')) {
+            next();
+            return;
+        }
+
+        const token: string | undefined = req.header('Authorization')?.replace('Bearer ', '');
+        if (token === undefined) {
+            res.status(401).send({ error: errorMessage });
+            return;
+        }
+        const data: User = jwt.verify(token, environment.jwtKey) as User;
         const user = await UserModel.findOne({ _id: data._id, 'tokens.token': token });
         if (!user) {
             next();
@@ -147,7 +144,6 @@ export const authService = async(req: Request, res: Response, next: NextFunction
 
     try {
         if (! req.header('Authorization')) {
-            console.log(errorMessage)
             res.status(401).send({ error: errorMessage });
             return;
         }
@@ -170,4 +166,3 @@ export const authService = async(req: Request, res: Response, next: NextFunction
     }
 
 };
-

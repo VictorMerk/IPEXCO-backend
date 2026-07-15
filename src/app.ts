@@ -67,6 +67,10 @@ console.log('---> statically served path');
 export const environment = new Environment();
 // console.log(environment)
 
+if (!environment.jwtKey) {
+  throw new Error('JWT_KEY must be configured before starting IPEXCO backend.');
+}
+
 const app = express();
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -75,7 +79,11 @@ const mongoose = require('mongoose');
 app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'pug');
 
-app.use(cors());
+const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:4200')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+app.use(cors({ origin: corsOrigins }));
 app.use(logger('dev'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: false, limit: '10mb' }));
@@ -85,6 +93,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // app.use(auth);
 app.use('/', indexRouter);
+app.get('/api/health', (_req, res) => res.status(200).send({ status: 'ok' }));
 
 app.use('/api/pddl', pddlRouter);
 
@@ -126,17 +135,10 @@ app.all('*', (req, res, next) => {
 app.use(errorMiddleware);
 
 
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*'); // update to match the domain you will make the request from
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  next();
-});
-
-
 // Data base connection
 const port = environment.port || 3000;
 const mongodbURL = process.env.MONGO || 'mongodb://localhost/ipexco';
-mongoose.connect(mongodbURL, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(mongodbURL)
     .then(() => {
       console.log('connected to DB');
       // mongoose.connection.db.dropDatabase();
