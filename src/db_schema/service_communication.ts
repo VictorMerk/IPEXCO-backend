@@ -223,6 +223,7 @@ export const PlanPilotQueryTypeZ = zenum([
   "solution",
   "solutionCount",
   "solutionReduction",
+  "impliedFacets",
 ]);
 export type PlanPilotQueryType = zinfer<typeof PlanPilotQueryTypeZ>;
 
