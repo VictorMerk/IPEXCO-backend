@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+.env
+.venv
+coverage
+npm-debug.log
+VAL_temp

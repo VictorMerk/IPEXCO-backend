@@ -41,7 +41,11 @@ UserSchema.pre('save', async function (next) {
 UserSchema.methods.generateAuthToken = async function() {
     // Generate an auth token for the user
     const user = this;
-    const token: string = jwt.sign({ _id: user._id}, process.env.JWT_KEY || '0' );
+    const jwtKey = process.env.JWT_KEY;
+    if (!jwtKey) {
+        throw new Error('JWT_KEY must be configured before issuing authentication tokens.');
+    }
+    const token: string = jwt.sign({ _id: user._id}, jwtKey );
     user.tokens = user.tokens.concat([{ token }]);
     await user.save();
     return token;
@@ -67,4 +71,3 @@ UserSchema.statics.findByCredentials = async (username: string, password: string
 };
 
 export const UserModel = mongoose.model<User>('User', UserSchema);
-

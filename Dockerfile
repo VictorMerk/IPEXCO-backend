@@ -1,31 +1,25 @@
 FROM ubuntu:noble
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update
-RUN apt-get upgrade -y
-RUN apt-get update
-RUN apt-get upgrade -y
-RUN apt-get install python3 -y
-RUN apt-get install -y python3-pip
-RUN python3 -m pip install setuptools --break-system-packages
-RUN python3 -m pip install unified-planning --break-system-packages
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 python3-pip curl ca-certificates && \
+    python3 -m pip install --break-system-packages setuptools unified-planning && \
+    rm -rf /var/lib/apt/lists/*
 
 # demo builder and plan-property plan checker
 COPY utils/ /usr/src/utils
 
-#install Node.js
-RUN apt-get update
-RUN apt-get install curl -y
+# Install the Node.js major version used by the project.
 RUN curl -sL https://deb.nodesource.com/setup_22.x | bash -
-RUN apt-get install -y nodejs
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*
 
 #copy app bin
 RUN mkdir -p /usr/src/app
-COPY . /usr/src/app
 WORKDIR /usr/src/app
-RUN rm -rf node_modules
-RUN npm install
-RUN npm install -g typescript
+COPY package.json package-lock.json ./
+RUN npm ci --include=dev
+COPY . /usr/src/app
+RUN npm run build
 
 # persistent storage
 RUN mkdir -p  /usr/src/app/dist/out-tsc/data
@@ -39,4 +33,4 @@ ENV PDDLPARSER=/usr/src/utils/pddl_parser/
 EXPOSE 3000
 
 WORKDIR /usr/src/app
-CMD tsc; node dist/out-tsc/app.js
+CMD ["node", "dist/out-tsc/app.js"]

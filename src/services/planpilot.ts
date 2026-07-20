@@ -1,4 +1,7 @@
 import {
+  ApplyPlanPilotFacetsRequest,
+  ApplyPlanPilotFacetsResponse,
+  ApplyPlanPilotFacetsResponseZ,
   CreatePlanPilotSessionRequest,
   CreatePlanPilotSessionResponse,
   CreatePlanPilotSessionResponseZ,
@@ -14,20 +17,31 @@ import {
   SelectPlanPilotFacetResponseZ,
   StopPlanPilotSessionResponse,
   StopPlanPilotSessionResponseZ,
-} from "../db_schema/service_communication";
+} from "../db_schema/planpilot_service_communication";
 import { Service } from "../db_schema/services";
+import { ZodError } from "zod";
 
-const PLANPILOT_TIMEOUT_MS = 30000;
+const DEFAULT_PLANPILOT_TIMEOUT_MS = 345000;
 
 export class PlanPilotClientError extends Error {
   constructor(
     message: string,
     public readonly status?: number,
     public readonly code?: string,
+    public readonly retryAfter?: string,
   ) {
     super(message);
     this.name = "PlanPilotClientError";
   }
+}
+
+export function isMissingPlanPilotSession(error: unknown): boolean {
+  return error instanceof PlanPilotClientError && (
+    error.code === "SESSION_NOT_FOUND"
+    || error.code === "SESSION_EXPIRED"
+    || error.status === 404
+    || error.status === 410
+  );
 }
 
 export async function createPlanPilotSession(
@@ -80,6 +94,19 @@ export async function selectPlanPilotFacet(
   );
 }
 
+export async function applyPlanPilotFacets(
+  service: Service,
+  externalSessionId: string,
+  payload: ApplyPlanPilotFacetsRequest,
+): Promise<ApplyPlanPilotFacetsResponse> {
+  return postPlanPilot(
+    service,
+    `/api/sessions/${encodeURIComponent(externalSessionId)}/facets/apply`,
+    payload,
+    ApplyPlanPilotFacetsResponseZ,
+  );
+}
+
 export async function queryPlanPilotSession(
   service: Service,
   externalSessionId: string,
@@ -123,7 +150,10 @@ async function requestPlanPilot<T>(
   schema: { parse: (data: unknown) => T },
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PLANPILOT_TIMEOUT_MS);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    planPilotTimeoutMs(),
+  );
 
   try {
     const response = await fetch(buildPlanPilotUrl(service, path), {
@@ -138,10 +168,25 @@ async function requestPlanPilot<T>(
 
     const body = await readJsonBody(response);
     if (!response.ok) {
-      throw toPlanPilotClientError(response.status, body);
+      throw toPlanPilotClientError(
+        response.status,
+        body,
+        response.headers.get("retry-after") ?? undefined,
+      );
     }
 
-    return schema.parse(body);
+    try {
+      return schema.parse(body);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        throw new PlanPilotClientError(
+          "PlanPilot returned an invalid response.",
+          502,
+          "PLANPILOT_INVALID_RESPONSE",
+        );
+      }
+      throw error;
+    }
   } catch (error) {
     if (error instanceof PlanPilotClientError) {
       throw error;
@@ -161,6 +206,13 @@ async function requestPlanPilot<T>(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function planPilotTimeoutMs(): number {
+  const configured = Number(process.env.PLANPILOT_REQUEST_TIMEOUT_MS);
+  return Number.isSafeInteger(configured) && configured > 0
+    ? configured
+    : DEFAULT_PLANPILOT_TIMEOUT_MS;
 }
 
 function buildPlanPilotUrl(service: Service, path: string): string {
@@ -183,12 +235,14 @@ async function readJsonBody(response: Response): Promise<unknown> {
 function toPlanPilotClientError(
   status: number,
   body: unknown,
+  retryAfter?: string,
 ): PlanPilotClientError {
   if (isPlanPilotErrorBody(body)) {
     return new PlanPilotClientError(
       body.error.message,
       status,
       body.error.code,
+      retryAfter,
     );
   }
 
@@ -196,6 +250,7 @@ function toPlanPilotClientError(
     `PlanPilot request failed with status ${status}.`,
     status,
     "PLANPILOT_FAILED",
+    retryAfter,
   );
 }
 
