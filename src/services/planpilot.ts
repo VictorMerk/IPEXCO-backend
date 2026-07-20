@@ -17,7 +17,7 @@ import {
   SelectPlanPilotFacetResponseZ,
   StopPlanPilotSessionResponse,
   StopPlanPilotSessionResponseZ,
-} from "../db_schema/service_communication";
+} from "../db_schema/planpilot_service_communication";
 import { Service } from "../db_schema/services";
 import { ZodError } from "zod";
 

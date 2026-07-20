@@ -1,6 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 import { coerce, date, nativeEnum, object, string, infer as zinfer } from "zod";
-import { PlanPilotSessionConfigurationZ } from "./service_communication";
+import { PlanPilotSessionConfigurationZ } from "./planpilot_service_communication";
 
 export enum PlanPilotRunStatus {
   CREATED = "CREATED",
@@ -17,7 +17,9 @@ export const PlanPilotRunZ = object({
   _id: string(),
   project: string(),
   user: string(),
-  iterationStep: string(),
+  iterationStep: string().nullish().describe(
+    "Legacy link from iteration-based PlanPilot runs; new runs are project-based.",
+  ),
   service: string(),
   externalSessionId: string().nullish(),
   startKey: string().nullish(),
@@ -47,9 +49,10 @@ const PlanPilotRunSchema = new Schema(
       index: true,
     },
     iterationStep: {
+      // Legacy data only. New PlanPilot runs start from the project base task.
       type: mongoose.Schema.Types.ObjectId,
       ref: "iteration-step",
-      required: true,
+      required: false,
       index: true,
     },
     service: {

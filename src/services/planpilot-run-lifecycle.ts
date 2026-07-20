@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 export type PlanPilotStartIdentity = {
   userId: unknown;
-  iterationStepId: unknown;
+  projectId: unknown;
   serviceId: unknown;
   sourceFingerprint: string;
   configuration: {
@@ -16,7 +16,7 @@ export type PlanPilotStartIdentity = {
 export function planPilotStartKey(identity: PlanPilotStartIdentity): string {
   const value = [
     String(identity.userId),
-    String(identity.iterationStepId),
+    String(identity.projectId),
     String(identity.serviceId),
     identity.sourceFingerprint,
     identity.configuration.encoding,
@@ -29,12 +29,10 @@ export function planPilotStartKey(identity: PlanPilotStartIdentity): string {
 export function planPilotSourceFingerprint(source: {
   domainPddl: string;
   problemPddl: string;
-  representativePlan?: Array<{ name: string; params: string[] }>;
 }): string {
   const value = JSON.stringify({
     domainPddl: source.domainPddl,
     problemPddl: source.problemPddl,
-    representativePlan: source.representativePlan ?? null,
   });
   return createHash("sha256").update(value).digest("hex");
 }

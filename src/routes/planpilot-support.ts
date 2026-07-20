@@ -1,14 +1,12 @@
 import express from "express";
 import { HydratedDocument } from "mongoose";
 
-import { PDDLPlanningModel } from "../db_schema/PDDL_task";
-import { IterationStepModel } from "../db_schema/iteration_step";
+import { PDDLPlanningModel, toPDDL } from "../db_schema/PDDL_task";
 import {
   PlanPilotRun,
   PlanPilotRunModel,
   PlanPilotRunStatus,
 } from "../db_schema/planpilot_run";
-import { GoalType, PlanPropertyModel } from "../db_schema/plan-properties/plan_property";
 import { ProjectModel } from "../db_schema/project";
 import { Service, ServiceModel, ServiceType } from "../db_schema/services";
 import { AuthenticatedRequest } from "../middleware/auth";
@@ -17,8 +15,7 @@ import {
   PlanPilotClientError,
   stopPlanPilotSession,
 } from "../services/planpilot";
-import { planPilotPlanValidationMessage } from "../services/plan-result";
-import { mergePddlGoals, selectPlanProperties } from "../services/planning-goals";
+import { planPilotSourceFingerprint } from "../services/planpilot-run-lifecycle";
 
 export async function getSelectedPlanPilotServices(
   serviceIds: string[],
@@ -36,28 +33,12 @@ export async function getSelectedPlanPilotServices(
 }
 
 export async function resolvePlanPilotSource(
-  iterationStepId: string,
+  projectId: string,
   userId: unknown,
   res: express.Response,
 ) {
-  const step = await IterationStepModel.findOne({
-    _id: iterationStepId,
-    user: userId,
-  });
-
-  if (!step) {
-    res.status(404).send({ message: "Iteration step not found." });
-    return null;
-  }
-
-  const planValidationMessage = planPilotPlanValidationMessage(step.plan);
-  if (planValidationMessage) {
-    res.status(400).send({ message: planValidationMessage });
-    return null;
-  }
-
   const project = await ProjectModel.findOne({
-    _id: step.project,
+    _id: projectId,
     user: userId,
   });
   if (!project) {
@@ -65,44 +46,62 @@ export async function resolvePlanPilotSource(
     return null;
   }
 
-  const pddlModel = structuredClone(step.task.model as PDDLPlanningModel);
-  const hardGoalIds = step.hardGoals.map((id) => id.toString());
-  if (hardGoalIds.length > 0) {
-    const hardGoals = await PlanPropertyModel.find({
-      _id: { $in: hardGoalIds },
-      project: step.project,
-    });
-    const hardGoalSelection = selectPlanProperties(hardGoals, hardGoalIds);
-    const unsupported = hardGoalSelection.selected.filter((goal) => (
-      goal.type !== GoalType.goalFact
-      || !goal.definition?.name
-      || !Array.isArray(goal.definition.parameters)
-    ));
-    if (hardGoalSelection.missingIds.length > 0 || unsupported.length > 0) {
-      res.status(400).send({
-        message: "PlanPilot currently supports enforced PDDL goal-fact properties only. Temporal hard goals cannot yet be represented faithfully in its PDDL plan space.",
-      });
-      return null;
-    }
-    pddlModel.goal = mergePddlGoals(
-      Array.isArray(pddlModel.goal) ? pddlModel.goal : [],
-      hardGoalSelection.selected.map((goal) => ({
-        name: goal.definition!.name,
-        arguments: [...goal.definition!.parameters],
-        negated: false,
-      })),
-    );
-  }
-
   return {
     project,
-    iterationStepId: step._id,
-    pddlModel,
-    representativePlan: step.plan!.actions!.map((action) => ({
-      name: action.name,
-      params: [...action.params],
-    })),
+    pddlModel: structuredClone(project.baseTask.model as PDDLPlanningModel),
   };
+}
+
+export type PlanPilotSourceFingerprintResult =
+  | { status: "available"; fingerprint: string }
+  | { status: "missing" }
+  | { status: "invalid" };
+
+export async function inspectPlanPilotSourceFingerprint(
+  projectId: unknown,
+  userId: unknown,
+): Promise<PlanPilotSourceFingerprintResult> {
+  const project = await ProjectModel.findOne({ _id: projectId, user: userId });
+  if (!project) {
+    return { status: "missing" };
+  }
+
+  try {
+    const [domainPddl, problemPddl] = toPDDL(
+      structuredClone(project.baseTask.model as PDDLPlanningModel),
+    );
+    return {
+      status: "available",
+      fingerprint: planPilotSourceFingerprint({ domainPddl, problemPddl }),
+    };
+  } catch {
+    return { status: "invalid" };
+  }
+}
+
+export function planPilotSourceConflict(
+  current: PlanPilotSourceFingerprintResult,
+  expectedFingerprint: string,
+): { message: string; code: string } | null {
+  if (current.status === "missing") {
+    return {
+      message: "The PlanPilot source was deleted while the session was being prepared.",
+      code: "PLANPILOT_SOURCE_REMOVED",
+    };
+  }
+  if (current.status === "invalid") {
+    return {
+      message: "The project task became invalid while the PlanPilot session was being prepared.",
+      code: "PLANPILOT_SOURCE_INVALID",
+    };
+  }
+  if (current.fingerprint !== expectedFingerprint) {
+    return {
+      message: "The project task changed while the PlanPilot session was being prepared.",
+      code: "PLANPILOT_SOURCE_CHANGED",
+    };
+  }
+  return null;
 }
 
 type PlanPilotRunContext = {
@@ -204,13 +203,13 @@ export async function getRunContext(
 
 export async function retireSupersededPlanPilotRuns(
   userId: unknown,
-  iterationStepId: unknown,
+  projectId: unknown,
   service: Service,
   sourceFingerprint: string,
 ): Promise<void> {
   const runs = await PlanPilotRunModel.find({
     user: userId,
-    iterationStep: iterationStepId,
+    project: projectId,
     service: service._id,
     sourceFingerprint: { $ne: sourceFingerprint },
     status: PlanPilotRunStatus.READY,

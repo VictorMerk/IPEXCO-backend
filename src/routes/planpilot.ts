@@ -2,7 +2,6 @@ import express from "express";
 import { boolean, object, string } from "zod";
 
 import { toPDDL } from "../db_schema/PDDL_task";
-import { IterationStepModel } from "../db_schema/iteration_step";
 import {
   PlanPilotRunModel,
   PlanPilotRunStatus,
@@ -13,7 +12,7 @@ import {
   PlanPilotSessionConfigurationZ,
   QueryPlanPilotSessionRequestZ,
   SelectPlanPilotFacetRequestZ,
-} from "../db_schema/service_communication";
+} from "../db_schema/planpilot_service_communication";
 import { AuthenticatedRequest, authAny } from "../middleware/auth";
 import {
   applyPlanPilotFacets,
@@ -25,7 +24,6 @@ import {
   selectPlanPilotFacet,
   stopPlanPilotSession,
 } from "../services/planpilot";
-import { representativePlanForConfiguration } from "../services/plan-result";
 import {
   isMongoDuplicateKey,
   planPilotStartKey,
@@ -35,10 +33,12 @@ import {
 import {
   getRunContext,
   getSelectedPlanPilotServices,
+  inspectPlanPilotSourceFingerprint,
   isEmptyObject,
   isServiceInProjectDomain,
   markExpiredIfNeeded,
   parseExpiresAt,
+  planPilotSourceConflict,
   resolvePlanPilotSource,
   retireSupersededPlanPilotRuns,
   sanitizePlanPilotError,
@@ -50,7 +50,7 @@ import {
 export const planPilotRouter = express.Router();
 
 const StartPlanPilotSessionZ = object({
-  iterationStepId: string().regex(/^[a-f\d]{24}$/i),
+  projectId: string().regex(/^[a-f\d]{24}$/i),
   horizon: PlanPilotSessionConfigurationZ.shape.horizon,
   encoding: PlanPilotSessionConfigurationZ.shape.encoding,
   abstractTimeSteps: boolean(),
@@ -74,7 +74,7 @@ planPilotRouter.post(
 
       const request = requestData.data;
       const source = await resolvePlanPilotSource(
-        request.iterationStepId,
+        request.projectId,
         req.user._id,
         res,
       );
@@ -112,7 +112,7 @@ planPilotRouter.post(
         [domainPddl, problemPddl] = toPDDL(source.pddlModel);
       } catch {
         res.status(400).send({
-          message: "Iteration step does not contain a valid PDDL planning model.",
+          message: "Project does not contain a valid PDDL planning task.",
         });
         return;
       }
@@ -121,27 +121,14 @@ planPilotRouter.post(
         encoding: request.encoding,
         abstractTimeSteps: request.abstractTimeSteps,
       };
-      const representativePlan = representativePlanForConfiguration(
-        source.representativePlan,
-        configuration.horizon,
-        configuration.encoding,
-      );
       const sourceFingerprint = planPilotSourceFingerprint({
         domainPddl,
         problemPddl,
-        representativePlan,
       });
-
-      await retireSupersededPlanPilotRuns(
-        req.user._id,
-        source.iterationStepId,
-        services[0],
-        sourceFingerprint,
-      );
 
       const startKey = planPilotStartKey({
         userId: req.user._id,
-        iterationStepId: source.iterationStepId,
+        projectId: source.project._id,
         serviceId: services[0]._id,
         sourceFingerprint,
         configuration,
@@ -166,7 +153,6 @@ planPilotRouter.post(
         run = await PlanPilotRunModel.create({
           project: source.project._id,
           user: req.user._id,
-          iterationStep: source.iterationStepId,
           service: services[0]._id,
           status: PlanPilotRunStatus.STARTING,
           configuration,
@@ -199,29 +185,31 @@ planPilotRouter.post(
         const session = await createPlanPilotSession(services[0], {
           task: { domainPddl, problemPddl },
           configuration,
-          representativePlan,
           source: {
             system: "IPEXCO",
             runId: run._id,
             projectId: source.project._id,
-            iterationStepId: source.iterationStepId,
           },
         });
         createdExternalSessionId = session.sessionId;
 
-        if (!(await planPilotSourceExists(
-          req.user._id,
-          source.iterationStepId,
+        const currentSource = await inspectPlanPilotSourceFingerprint(
           source.project._id,
-        ))) {
+          req.user._id,
+        );
+        const sourceConflict = planPilotSourceConflict(
+          currentSource,
+          sourceFingerprint,
+        );
+        if (sourceConflict) {
           try {
             await stopPlanPilotSession(services[0], session.sessionId);
           } catch (error) {
             if (!isMissingPlanPilotSession(error)) {
               run.externalSessionId = session.sessionId;
-              run.status = PlanPilotRunStatus.READY;
+              run.status = PlanPilotRunStatus.FAILED;
               run.startKey = undefined;
-              run.error = "Its source was deleted, but this session still needs cleanup.";
+              run.error = `${sourceConflict.message} The external session still needs cleanup.`;
               await run.save().catch((saveError) => {
                 console.error("Could not retain the PlanPilot cleanup record:", saveError);
               });
@@ -230,10 +218,7 @@ planPilotRouter.post(
             }
           }
           await PlanPilotRunModel.deleteOne({ _id: run._id });
-          res.status(409).send({
-            message: "The PlanPilot source was deleted while the session was being prepared.",
-            code: "PLANPILOT_SOURCE_REMOVED",
-          });
+          res.status(409).send(sourceConflict);
           return;
         }
 
@@ -244,6 +229,17 @@ planPilotRouter.post(
         run.expiresAt = parseExpiresAt(session.expiresAt);
         await run.save();
 
+        await retireSupersededPlanPilotRuns(
+          req.user._id,
+          source.project._id,
+          services[0],
+          sourceFingerprint,
+        ).catch((error) => {
+          console.warn(
+            `Could not retire superseded PlanPilot runs: ${sanitizePlanPilotError(error)}`,
+          );
+        });
+
         res.status(201).send({
           runId: run._id,
           externalSessionId: session.sessionId,
@@ -252,6 +248,8 @@ planPilotRouter.post(
           expiresAt: run.expiresAt,
           hasPlan: session.hasPlan,
           minimumHorizon: session.minimumHorizon,
+          selectionRevision: session.selectionRevision,
+          solutionCount: session.solutionCount,
           solution: session.solution,
           facets: session.facets,
           reused: false,
@@ -268,7 +266,6 @@ planPilotRouter.post(
         }
         if (!(await planPilotSourceExists(
           req.user._id,
-          source.iterationStepId,
           source.project._id,
         ))) {
           await PlanPilotRunModel.deleteOne({ _id: run._id });
@@ -288,14 +285,9 @@ planPilotRouter.post(
 
 async function planPilotSourceExists(
   userId: unknown,
-  iterationStepId: unknown,
   projectId: unknown,
 ): Promise<boolean> {
-  const [step, project] = await Promise.all([
-    IterationStepModel.exists({ _id: iterationStepId, user: userId }),
-    ProjectModel.exists({ _id: projectId, user: userId }),
-  ]);
-  return Boolean(step && project);
+  return Boolean(await ProjectModel.exists({ _id: projectId, user: userId }));
 }
 
 planPilotRouter.get(
@@ -371,7 +363,13 @@ planPilotRouter.post(
         context.run.externalSessionId!,
       );
       await updatePlanPilotRunExpiry(context.run, response.expiresAt);
-      res.status(200).send({ runId: context.run._id, facets: response.facets });
+      res.status(200).send({
+        runId: context.run._id,
+        selectionRevision: response.selectionRevision,
+        solutionCount: response.solutionCount,
+        solution: response.solution,
+        facets: response.facets,
+      });
     } catch (error) {
       await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
@@ -403,7 +401,13 @@ planPilotRouter.post(
         requestData.data,
       );
       await updatePlanPilotRunExpiry(context.run, response.expiresAt);
-      res.status(200).send({ runId: context.run._id, facets: response.facets });
+      res.status(200).send({
+        runId: context.run._id,
+        selectionRevision: response.selectionRevision,
+        solutionCount: response.solutionCount,
+        solution: response.solution,
+        facets: response.facets,
+      });
     } catch (error) {
       await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
@@ -433,7 +437,13 @@ planPilotRouter.post(
         requestData.data,
       );
       await updatePlanPilotRunExpiry(context.run, response.expiresAt);
-      res.status(200).send({ runId: context.run._id, facets: response.facets });
+      res.status(200).send({
+        runId: context.run._id,
+        selectionRevision: response.selectionRevision,
+        solutionCount: response.solutionCount,
+        solution: response.solution,
+        facets: response.facets,
+      });
     } catch (error) {
       await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
@@ -463,7 +473,12 @@ planPilotRouter.post(
         requestData.data,
       );
       await updatePlanPilotRunExpiry(context.run, response.expiresAt);
-      res.status(200).send({ runId: context.run._id, result: response.result });
+      res.status(200).send({
+        runId: context.run._id,
+        selectionRevision: response.selectionRevision,
+        solutionCount: response.solutionCount,
+        result: response.result,
+      });
     } catch (error) {
       await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);

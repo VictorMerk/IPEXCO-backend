@@ -1,4 +1,3 @@
-import { PDDLFact } from "../db_schema/PDDL_task";
 import { PlanProperty } from "../db_schema/plan-properties/plan_property";
 import { planPropertyIdSet } from "./plan-result";
 
@@ -31,18 +30,6 @@ export function mergePlannerGoals(
   }
   for (const goal of enforcedGoals) {
     merged.set(planPropertyKey(goal), goal);
-  }
-  return [...merged.values()];
-}
-
-export function mergePddlGoals(
-  taskGoals: PDDLFact[],
-  enforcedGoals: PDDLFact[],
-): PDDLFact[] {
-  const merged = new Map<string, PDDLFact>();
-  for (const goal of [...taskGoals, ...enforcedGoals]) {
-    const key = JSON.stringify([goal.name, goal.arguments, goal.negated]);
-    merged.set(key, goal);
   }
   return [...merged.values()];
 }
