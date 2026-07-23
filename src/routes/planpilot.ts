@@ -54,6 +54,7 @@ const StartPlanPilotSessionZ = object({
   horizon: PlanPilotSessionConfigurationZ.shape.horizon,
   encoding: PlanPilotSessionConfigurationZ.shape.encoding,
   abstractTimeSteps: boolean(),
+  stateFacets: boolean().optional().default(false),
 });
 
 planPilotRouter.post(
@@ -120,6 +121,7 @@ planPilotRouter.post(
         horizon: request.horizon,
         encoding: request.encoding,
         abstractTimeSteps: request.abstractTimeSteps,
+        stateFacets: request.stateFacets,
       };
       const sourceFingerprint = planPilotSourceFingerprint({
         domainPddl,

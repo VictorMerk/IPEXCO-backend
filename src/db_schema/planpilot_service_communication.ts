@@ -46,13 +46,14 @@ export const PlanPilotFacetRemainingMetricsZ = object({
 export const PlanPilotFacetZ = object({
   id: string().trim().min(1),
   label: string().trim().min(1),
-  timestep: number().int().positive().nullable(),
+  timestep: number().int().nonnegative().nullable(),
   selectionState: PlanPilotFacetSelectionStateZ,
   action: object({
     name: string().trim().min(1),
     arguments: array(string()),
   }).optional(),
   abstractTimeStep: boolean().optional(),
+  facetKind: zenum(["action", "state"]).optional().default("action"),
   selectable: boolean().optional(),
   facetType: optional(zenum(["plan", "selected", "implied", "optional", "empty"])),
   parentId: optional(string().trim().min(1)),
@@ -62,7 +63,19 @@ export const PlanPilotFacetZ = object({
   remaining: PlanPilotFacetRemainingMetricsZ.optional(),
 }).superRefine((facet, context) => {
   const isAbstract = facet.abstractTimeStep === true;
-  if (isAbstract !== (facet.timestep === null)) {
+  if (
+    facet.facetKind === "state"
+    && (facet.timestep === null || isAbstract)
+  ) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["timestep"],
+      message: "State facets must have a concrete state timestep and cannot be abstract.",
+    });
+  } else if (
+    facet.facetKind === "action"
+    && (isAbstract !== (facet.timestep === null) || facet.timestep === 0)
+  ) {
     context.addIssue({
       code: ZodIssueCode.custom,
       path: ["timestep"],
@@ -136,6 +149,7 @@ export const PlanPilotSessionConfigurationZ = object({
   horizon: number().int().positive().max(MAX_PLANPILOT_HORIZON),
   encoding: PlanPilotEncodingZ,
   abstractTimeSteps: boolean(),
+  stateFacets: boolean().optional(),
 });
 export type PlanPilotSessionConfiguration = zinfer<
   typeof PlanPilotSessionConfigurationZ
@@ -360,6 +374,7 @@ export type PlanPilotQueryResult = zinfer<typeof PlanPilotQueryResultZ>;
 export const QueryPlanPilotSessionRequestZ = object({
   type: PlanPilotQueryTypeZ,
   solutionNumber: number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  solutionMode: zenum(["single", "prefix"]).optional(),
   facetId: string().trim().min(1).optional(),
 }).superRefine((request, context) => {
   if (request.type !== "solution" && request.solutionNumber !== undefined) {
@@ -374,6 +389,13 @@ export const QueryPlanPilotSessionRequestZ = object({
       code: ZodIssueCode.custom,
       path: ["solutionNumber"],
       message: "solutionNumber is required for solution queries.",
+    });
+  }
+  if (request.type !== "solution" && request.solutionMode !== undefined) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["solutionMode"],
+      message: "solutionMode is only supported for solution queries.",
     });
   }
   if (request.type !== "selectionImpact" && request.facetId !== undefined) {

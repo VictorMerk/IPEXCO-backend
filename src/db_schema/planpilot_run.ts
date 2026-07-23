@@ -74,6 +74,7 @@ const PlanPilotRunSchema = new Schema(
       horizon: { type: Number, required: true },
       encoding: { type: String, required: true },
       abstractTimeSteps: { type: Boolean, required: true },
+      stateFacets: { type: Boolean, required: true, default: false },
     },
     error: { type: String, required: false },
     expiresAt: { type: Date, required: false },

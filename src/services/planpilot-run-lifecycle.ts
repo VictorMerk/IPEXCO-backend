@@ -9,6 +9,7 @@ export type PlanPilotStartIdentity = {
     horizon: number;
     encoding: string;
     abstractTimeSteps: boolean;
+    stateFacets: boolean;
   };
 };
 
@@ -22,6 +23,7 @@ export function planPilotStartKey(identity: PlanPilotStartIdentity): string {
     identity.configuration.encoding,
     identity.configuration.horizon,
     identity.configuration.abstractTimeSteps ? "abstract" : "concrete",
+    identity.configuration.stateFacets ? "states" : "actions",
   ].join("\u0000");
   return createHash("sha256").update(value).digest("hex");
 }
