@@ -1,5 +1,4 @@
-import * as child from 'child_process';
-import { writeFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
 import { environment } from '../../app';
 import { pythonShellCallSimple } from '../python-call';
@@ -18,7 +17,7 @@ export class PDDLParser {
     {
         this.runFolder = path.join(root, String(id));
 
-        child.execSync(`mkdir -p ${this.runFolder}`);
+        mkdirSync(this.runFolder, {recursive: true});
 
         writeFileSync(path.join(this.runFolder, 'domain.pddl'),
             domainText,
@@ -55,10 +54,10 @@ export class PDDLParser {
 
     private getPythonPath(): string {
         const venvPath = path.join(this.root, '.venv', 'bin', 'python');
-        return require('fs').existsSync(venvPath) ? venvPath : '/usr/bin/python3';
+        return existsSync(venvPath) ? venvPath : '/usr/bin/python3';
     }
 
     tidyUp(): void {
-        child.execSync(`rm -r ${this.runFolder}`);
+        rmSync(this.runFolder, {recursive: true, force: true});
     }
 }
