@@ -2,7 +2,7 @@ import express from 'express';
 import { PlanRunStatus } from '../db_schema/iteration_step';
 import { PlanBaseZ, PlanModel } from '../db_schema/plan';
 import { ProjectModel } from '../db_schema/project';
-import { SimplePlannerRequest, SimplePlannerResponse } from '../db_schema/service_communication';
+import { SimplePlannerRequest, SimplePlannerResponseZ } from '../db_schema/service_communication';
 import { ServiceModel } from '../db_schema/services';
 import { auth, authAny, AuthenticatedRequest, authService } from '../middleware/auth';
 import { callServices } from '../services/utils';
@@ -31,10 +31,14 @@ planRouter.get('/', authAny, async (req: any, res) => {
 
 });
 
-planRouter.get('/:id', authAny, async (req, res) => {
+planRouter.get('/:id', authAny, async (req: AuthenticatedRequest, res) => {
     try{
+        if (!req.user) {
+            res.status(401).send();
+            return;
+        }
         const id =  req.params.id;
-        const run = await PlanModel.findOne({ _id: id});
+        const run = await PlanModel.findOne({ _id: id, user: req.user._id });
 
         if (!run) { 
             res.status(404).send({ message: 'No plan step found.' });
@@ -73,7 +77,10 @@ planRouter.post('', authAny, async (req: AuthenticatedRequest, res) => {
         }
         await plan.save();
 
-        let project = await ProjectModel.findById(plan.project);
+        let project = await ProjectModel.findOne({
+            _id: plan.project,
+            user: req.user._id,
+        });
         if (!project) {
             plan.status = PlanRunStatus.FAILED;
             await plan.save();
@@ -111,7 +118,7 @@ planRouter.post('', authAny, async (req: AuthenticatedRequest, res) => {
     }
     catch (ex) {
         console.log(ex);
-        res.status(500);
+        res.status(500).send();
     }
 
 });
@@ -135,26 +142,35 @@ planRouter.post('/finished/:id', authService, async (req: any, res) => {
             return;
         }
 
-        if (plan.status == PlanRunStatus.UNSOLVABLE || 
-            plan.status == PlanRunStatus.FAILED 
-        ) {
+        if (plan.status !== PlanRunStatus.RUNNING) {
             console.log('Got repeated response for plan call: ' + plan._id);
             res.status(200).send('Plan run already set.');
             return;
         }
 
-        const response = req.body as SimplePlannerResponse;
-        const actions = response.actions;
-        const status = response.status;
-
-        plan.status = status;
-        await plan.save();
-
-        if(status === PlanRunStatus.SOLVED){
-            plan.actions = actions;           
+        const parsedResponse = SimplePlannerResponseZ.safeParse(req.body);
+        if (!parsedResponse.success || parsedResponse.data.id !== refId) {
+            plan.status = PlanRunStatus.FAILED;
+            plan.actions = undefined;
+            await plan.save();
+            res.status(400).send({ message: 'Invalid planner callback response.' });
+            return;
         }
 
-        await plan.save()
+        const response = parsedResponse.data;
+        if (response.status === PlanRunStatus.PENDING || response.status === PlanRunStatus.RUNNING) {
+            plan.status = PlanRunStatus.FAILED;
+            plan.actions = undefined;
+            await plan.save();
+            res.status(400).send({ message: 'Planner callback must contain a terminal result.' });
+            return;
+        }
+
+        plan.status = response.status;
+        plan.actions = response.status === PlanRunStatus.SOLVED
+            ? response.actions
+            : undefined;
+        await plan.save();
         
         res.status(200).send();
         return;
@@ -166,14 +182,22 @@ planRouter.post('/finished/:id', authService, async (req: any, res) => {
 });
 
 
-planRouter.post('/cancel/:id', authAny, async (req, res) => {
+planRouter.post('/cancel/:id', authAny, async (req: AuthenticatedRequest, res) => {
 
     try {
+
+        if (!req.user) {
+            res.status(401).send();
+            return;
+        }
 
         const id = req.params.id;
         console.log('Cancel: ' + id);
 
-        const plan = await PlanModel.findById(id);
+        const plan = await PlanModel.findOne({
+            _id: id,
+            user: req.user._id,
+        });
 
         if (!plan) {
             res.status(404).send({ message: 'No plan found.' });
@@ -209,18 +233,25 @@ planRouter.post('/cancel/:id', authAny, async (req, res) => {
     
         res.send(true);
     } catch (ex) {
-        res.status(500);
+        res.status(500).send();
     }
 
 });
 
 
-planRouter.delete('/:id', auth, async (req, res) => {
+planRouter.delete('/:id', auth, async (req: AuthenticatedRequest, res) => {
 
     try {
-        const result = await PlanModel.deleteOne({ _id: req.params.id });
+        if (!req.user) {
+            res.status(401).send();
+            return;
+        }
+        const result = await PlanModel.deleteOne({
+            _id: req.params.id,
+            user: req.user._id,
+        });
 
-        if (!result) {
+        if (result.deletedCount !== 1) {
             res.status(404).send({ message: 'No plan found.' });
             return;
         }
@@ -229,9 +260,7 @@ planRouter.delete('/:id', auth, async (req, res) => {
             data: {deleted: true}
         });
     } catch (ex) {
-        res.status(500);
+        res.status(500).send();
     }
 
 });
-
-

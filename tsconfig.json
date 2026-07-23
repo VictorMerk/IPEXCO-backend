@@ -31,5 +31,8 @@
       "scripthost",
       "es2015.collection"
     ]
-  }
+  },
+  "exclude": [
+    "scripts"
+  ]
 }

@@ -2,7 +2,6 @@ import {
   any,
   array,
   boolean,
-  enum as zenum,
   nativeEnum,
   number,
   object,
@@ -12,7 +11,7 @@ import {
 } from "zod";
 import { ExplanationRunStatusZ } from "./explanations";
 import { PlanRunStatusZ } from "./iteration_step";
-import { Action, ActionZ } from "./plan-properties/action_set";
+import { ActionZ } from "./plan-properties/action_set";
 import { PlanProperty, PlanPropertyZ } from "./plan-properties/plan_property";
 
 export const PlannerRequestZ = object({
@@ -26,12 +25,14 @@ export const PlannerRequestZ = object({
 
 export type PlannerRequest = zinfer<typeof PlannerRequestZ>;
 
-export const PlannerResponseZ = object({
+const PlannerResultZ = object({
   id: string(),
   status: PlanRunStatusZ,
   actions: array(ActionZ),
   runtime: number().optional(), // in sec
 });
+
+export const PlannerResponseZ = PlannerResultZ;
 
 export type PlannerResponse = zinfer<typeof PlannerResponseZ>;
 
@@ -43,12 +44,7 @@ export const SimplePlannerRequestZ = object({
 
 export type SimplePlannerRequest = zinfer<typeof SimplePlannerRequestZ>;
 
-export const SimplePlannerResponseZ = object({
-  id: string(),
-  status: PlanRunStatusZ,
-  actions: array(ActionZ),
-  runtime: number().optional(), // in sec
-});
+export const SimplePlannerResponseZ = PlannerResultZ;
 
 export type SimplePlannerResponse = zinfer<typeof SimplePlannerResponseZ>;
 
@@ -113,169 +109,5 @@ export const PropertyCheckerResponseZ = object({
 
 export type PropertyCheckerResponse = zinfer<typeof PropertyCheckerResponseZ>;
 
-export const PlanPilotEncodingZ = zenum(["exact", "bounded"]);
-export type PlanPilotEncoding = zinfer<typeof PlanPilotEncodingZ>;
-
-export const PlanPilotFacetSelectionStateZ = zenum([
-  "neutral",
-  "positive",
-  "negative",
-]);
-export type PlanPilotFacetSelectionState = zinfer<
-  typeof PlanPilotFacetSelectionStateZ
->;
-
-export const PlanPilotFacetMetricPairZ = object({
-  positive: number().nullable(),
-  negative: number().nullable(),
-});
-
-export const PlanPilotFacetMetricsZ = object({
-  solution: PlanPilotFacetMetricPairZ,
-  facets: PlanPilotFacetMetricPairZ,
-});
-
-export const PlanPilotFacetZ = object({
-  id: string(),
-  label: string(),
-  timestep: number().int().nullable(),
-  selectionState: PlanPilotFacetSelectionStateZ,
-  reduction: PlanPilotFacetMetricsZ.optional(),
-  remaining: PlanPilotFacetMetricsZ.optional(),
-});
-
-export type PlanPilotFacet = zinfer<typeof PlanPilotFacetZ>;
-
-export const PlanPilotSessionConfigurationZ = object({
-  horizon: number().int().positive(),
-  encoding: PlanPilotEncodingZ,
-  abstractTimeSteps: boolean(),
-});
-
-export type PlanPilotSessionConfiguration = zinfer<
-  typeof PlanPilotSessionConfigurationZ
->;
-
-export const CreatePlanPilotSessionRequestZ = object({
-  task: object({
-    domainPddl: string(),
-    problemPddl: string(),
-  }),
-  configuration: PlanPilotSessionConfigurationZ,
-  source: object({
-    system: zenum(["IPEXCO"]),
-    runId: string().optional(),
-    projectId: string().optional(),
-    iterationStepId: string().optional(),
-  }),
-});
-
-export type CreatePlanPilotSessionRequest = zinfer<
-  typeof CreatePlanPilotSessionRequestZ
->;
-
-export const CreatePlanPilotSessionResponseZ = object({
-  sessionId: string(),
-  status: zenum(["ready"]),
-  configuration: PlanPilotSessionConfigurationZ,
-  createdAt: string(),
-  lastAccessAt: string(),
-  expiresAt: string(),
-  facets: array(PlanPilotFacetZ),
-});
-
-export type CreatePlanPilotSessionResponse = zinfer<
-  typeof CreatePlanPilotSessionResponseZ
->;
-
-export const ListPlanPilotFacetsResponseZ = object({
-  sessionId: string(),
-  facets: array(PlanPilotFacetZ),
-});
-
-export type ListPlanPilotFacetsResponse = zinfer<
-  typeof ListPlanPilotFacetsResponseZ
->;
-
-export const SelectPlanPilotFacetRequestZ = object({
-  facetId: string(),
-  selectionState: PlanPilotFacetSelectionStateZ,
-  previousSelectionState: PlanPilotFacetSelectionStateZ.optional(),
-});
-
-export type SelectPlanPilotFacetRequest = zinfer<
-  typeof SelectPlanPilotFacetRequestZ
->;
-
-export const SelectPlanPilotFacetResponseZ = object({
-  sessionId: string(),
-  facets: array(PlanPilotFacetZ),
-});
-
-export type SelectPlanPilotFacetResponse = zinfer<
-  typeof SelectPlanPilotFacetResponseZ
->;
-
-export const PlanPilotQueryTypeZ = zenum([
-  "facets",
-  "facetCount",
-  "facetReduction",
-  "solution",
-  "solutionCount",
-  "solutionReduction",
-]);
-export type PlanPilotQueryType = zinfer<typeof PlanPilotQueryTypeZ>;
-
-export const PlanPilotSolutionZ = object({
-  label: string(),
-  facets: array(PlanPilotFacetZ),
-});
-
-export const PlanPilotQueryResultZ = object({
-  type: PlanPilotQueryTypeZ,
-  value: number().optional(),
-  facets: array(PlanPilotFacetZ).optional(),
-  solutions: array(PlanPilotSolutionZ).optional(),
-});
-
-export type PlanPilotQueryResult = zinfer<typeof PlanPilotQueryResultZ>;
-
-export const QueryPlanPilotSessionRequestZ = object({
-  type: PlanPilotQueryTypeZ,
-  solutionNumber: number().int().positive().optional(),
-});
-
-export type QueryPlanPilotSessionRequest = zinfer<
-  typeof QueryPlanPilotSessionRequestZ
->;
-
-export const QueryPlanPilotSessionResponseZ = object({
-  sessionId: string(),
-  result: PlanPilotQueryResultZ,
-});
-
-export type QueryPlanPilotSessionResponse = zinfer<
-  typeof QueryPlanPilotSessionResponseZ
->;
-
-export const GetPlanPilotSessionResponseZ = object({
-  sessionId: string(),
-  status: zenum(["ready"]),
-  configuration: PlanPilotSessionConfigurationZ,
-  createdAt: string(),
-  lastAccessAt: string(),
-  expiresAt: string(),
-});
-
-export type GetPlanPilotSessionResponse = zinfer<
-  typeof GetPlanPilotSessionResponseZ
->;
-
-export const StopPlanPilotSessionResponseZ = object({
-  sessionId: string(),
-  status: zenum(["stopped"]),
-});
-
-export type StopPlanPilotSessionResponse = zinfer<
-  typeof StopPlanPilotSessionResponseZ
->;
+// Keep old imports working while PlanPilot code moves to its own contract module.
+export * from "./planpilot_service_communication";

@@ -1,24 +1,29 @@
 import express from 'express';
-import { authAny, authService } from '../middleware/auth';
+import { AuthenticatedRequest, authAny, authService } from '../middleware/auth';
 
 import { DemoModel } from '../db_schema/demo';
 import { IterationStepModel, PlanRunStatus, StepStatus } from '../db_schema/iteration_step';
 import { GoalType, PlanProperty, PlanPropertyModel } from '../db_schema/plan-properties/plan_property';
 import { Project, ProjectModel } from '../db_schema/project';
-import { PlannerRequest, PlannerResponse, PropertyCheckerResponseZ, PropertyCheckRunStatus } from '../db_schema/service_communication';
+import { PlannerRequest, PlannerResponseZ, PropertyCheckerResponseZ, PropertyCheckRunStatus } from '../db_schema/service_communication';
 import { Service, ServiceModel, ServiceType } from '../db_schema/services';
 import { checkProperties } from '../services/pddl/property_check';
+import { hasValidPlanActions } from '../services/plan-result';
+import { mergePlannerGoals, selectPlanProperties } from '../services/planning-goals';
 import { callServices } from '../services/utils';
 
 export const plannerRouter = express.Router();
 
-plannerRouter.post('/plan-step/:id', authAny, async (req: any, res) => {
+plannerRouter.post('/plan-step/:id', authAny, async (req: AuthenticatedRequest, res) => {
 
     try {
 
         const refId = req.params.id;
         console.log('Compute plan of: ' + refId)
-        const iterationStep = await IterationStepModel.findOne({ _id: refId});
+        const iterationStep = await IterationStepModel.findOne({
+            _id: refId,
+            user: req.user?._id,
+        });
 
         if (iterationStep == null) {
             console.log('[Plan Computation] Iteration Step does not exist.')
@@ -35,8 +40,22 @@ plannerRouter.post('/plan-step/:id', authAny, async (req: any, res) => {
         const model = iterationStep.task.model
         const plan_properties = await PlanPropertyModel.find({ project: iterationStep.project}) as PlanProperty[];
 
-        const enforced_goals = plan_properties.filter(pp => !pp._id ? false : iterationStep.hardGoals.includes(pp._id?.toString()));
-        const planner_goals = enforced_goals.length > 0 ? enforced_goals : taskGoalProperties(iterationStep);
+        const enforcedSelection = selectPlanProperties(plan_properties, iterationStep.hardGoals);
+        if (enforcedSelection.missingIds.length > 0) {
+            iterationStep.status = StepStatus.UNKNOWN;
+            iterationStep.plan.status = PlanRunStatus.FAILED;
+            await iterationStep.save();
+            res.status(400).send({
+                status: false,
+                message: 'One or more enforced goals do not exist in this project.',
+                missingGoalIds: enforcedSelection.missingIds,
+            });
+            return;
+        }
+        const planner_goals = mergePlannerGoals(
+            taskGoalProperties(iterationStep),
+            enforcedSelection.selected,
+        );
 
         const baseURL = process.env.BASE_URL || 'http://host.docker.internal:3000'
         let payload: PlannerRequest = {
@@ -141,43 +160,65 @@ plannerRouter.post('/plan-step/finished/:id', authService, async (req: any, res)
             return;
         }
 
-        if (iterationStep.plan.status == PlanRunStatus.UNSOLVABLE || 
-            iterationStep.plan.status == PlanRunStatus.FAILED 
-            // TODO we could update failed runs if multiple planner run in parallel
-        ) {
+        if (iterationStep.plan.status !== PlanRunStatus.RUNNING) {
             console.log('Got repeated response for plan call: ' + iterationStep._id);
             res.status(200).send('Plan run already set.');
             return;
         }
 
-        const response = req.body as PlannerResponse;
-        const actions = response.actions;
-        const status = response.status;
-
-        if(status === PlanRunStatus.NO_PLAN_FOUND){
-            iterationStep.status = StepStatus.UNKNOWN
-            iterationStep.plan.status = PlanRunStatus.NO_PLAN_FOUND;
-            await iterationStep.save();
-        }
-
-        if(status === PlanRunStatus.UNSOLVABLE){
-            iterationStep.status = StepStatus.UNSOLVABLE
-            iterationStep.plan.status = PlanRunStatus.UNSOLVABLE;
-            await iterationStep.save();
-        }
-
-        if(status === PlanRunStatus.FAILED){
+        const parsedResponse = PlannerResponseZ.safeParse(req.body);
+        if (!parsedResponse.success || parsedResponse.data.id !== refId) {
             iterationStep.status = StepStatus.UNKNOWN;
             iterationStep.plan.status = PlanRunStatus.FAILED;
+            iterationStep.plan.actions = undefined;
+            iterationStep.plan.satisfied_properties = undefined;
             await iterationStep.save();
+            res.status(400).send({ message: 'Invalid planner callback response.' });
+            return;
         }
 
-        if(status === PlanRunStatus.SOLVED){
-            iterationStep.status = StepStatus.SOLVABLE;
-            iterationStep.plan.actions = actions;
-            iterationStep.plan.satisfied_properties = undefined
-            await iterationStep.save()
-            checkProperties(iterationStep);
+        const response = parsedResponse.data;
+        iterationStep.plan.satisfied_properties = undefined;
+
+        switch (response.status) {
+            case PlanRunStatus.NO_PLAN_FOUND:
+                iterationStep.status = StepStatus.UNKNOWN;
+                iterationStep.plan.status = PlanRunStatus.NO_PLAN_FOUND;
+                iterationStep.plan.actions = undefined;
+                await iterationStep.save();
+                break;
+            case PlanRunStatus.UNSOLVABLE:
+                iterationStep.status = StepStatus.UNSOLVABLE;
+                iterationStep.plan.status = PlanRunStatus.UNSOLVABLE;
+                iterationStep.plan.actions = undefined;
+                await iterationStep.save();
+                break;
+            case PlanRunStatus.FAILED:
+                iterationStep.status = StepStatus.UNKNOWN;
+                iterationStep.plan.status = PlanRunStatus.FAILED;
+                iterationStep.plan.actions = undefined;
+                await iterationStep.save();
+                break;
+            case PlanRunStatus.CANCELED:
+                iterationStep.status = StepStatus.UNKNOWN;
+                iterationStep.plan.status = PlanRunStatus.CANCELED;
+                iterationStep.plan.actions = undefined;
+                await iterationStep.save();
+                break;
+            case PlanRunStatus.SOLVED:
+                iterationStep.status = StepStatus.UNKNOWN;
+                iterationStep.plan.status = PlanRunStatus.PENDING;
+                iterationStep.plan.actions = response.actions;
+                await iterationStep.save();
+                await checkProperties(iterationStep);
+                break;
+            default:
+                iterationStep.status = StepStatus.UNKNOWN;
+                iterationStep.plan.status = PlanRunStatus.FAILED;
+                iterationStep.plan.actions = undefined;
+                await iterationStep.save();
+                res.status(400).send({ message: 'Planner callback must contain a terminal result.' });
+                return;
         }
         
         res.status(200).send();
@@ -215,16 +256,24 @@ plannerRouter.post('/plan-step/checked/:id', authService, async (req: any, res) 
             return;
         }
 
-        if (iterationStep.plan.status == PlanRunStatus.UNSOLVABLE || 
-            iterationStep.plan.status == PlanRunStatus.SOLVED || 
-            iterationStep.plan.status == PlanRunStatus.FAILED 
-        ) {
+        if (iterationStep.plan.status !== PlanRunStatus.PENDING &&
+            iterationStep.plan.status !== PlanRunStatus.RUNNING) {
             console.log('Got repeated response for check call: ' + iterationStep._id);
             res.status(200).send('Plan run already checked.');
             return;
         }
 
-        const response = PropertyCheckerResponseZ.parse(req.body);
+        const parsedResponse = PropertyCheckerResponseZ.safeParse(req.body);
+        if (!parsedResponse.success || parsedResponse.data.id !== refId) {
+            iterationStep.status = StepStatus.UNKNOWN;
+            iterationStep.plan.status = PlanRunStatus.FAILED;
+            iterationStep.plan.actions = undefined;
+            await iterationStep.save();
+            res.status(400).send({ message: 'Invalid property-checker callback response.' });
+            return;
+        }
+
+        const response = parsedResponse.data;
         const status = response.status;
         const satisfiedProperties = response.satisfiedProperties;
 
@@ -241,8 +290,14 @@ plannerRouter.post('/plan-step/checked/:id', authService, async (req: any, res) 
         }
 
         if(status === PropertyCheckRunStatus.FINISHED){
-            iterationStep.status = StepStatus.SOLVABLE;
-            iterationStep.plan.status = PlanRunStatus.SOLVED;
+            if (!hasValidPlanActions(iterationStep.plan.actions)) {
+                iterationStep.status = StepStatus.UNKNOWN;
+                iterationStep.plan.status = PlanRunStatus.FAILED;
+                iterationStep.plan.actions = undefined;
+                await iterationStep.save();
+                res.status(400).send({ message: 'Cannot finish a property check without a valid plan.' });
+                return;
+            }
             
             console.log('Enforced Properties')
             console.log(iterationStep.hardGoals);
@@ -253,10 +308,13 @@ plannerRouter.post('/plan-step/checked/:id', authService, async (req: any, res) 
             if(! iterationStep.hardGoals.map(id => id.toString()).every(id => satisfiedProperties.includes(id))){
                 iterationStep.plan.status = PlanRunStatus.FAILED
                 iterationStep.status = StepStatus.UNKNOWN;
+                iterationStep.plan.actions = undefined;
                 await iterationStep.save();
                 throw Error('Not all enforced goals are identified as satisfied by the property checker!');
             }
 
+            iterationStep.status = StepStatus.SOLVABLE;
+            iterationStep.plan.status = PlanRunStatus.SOLVED;
             iterationStep.plan.satisfied_properties =  satisfiedProperties.filter(id => id != undefined);
 
             await iterationStep.save()

@@ -1,11 +1,15 @@
 import express from 'express';
 import { auth, authAny, AuthenticatedRequest } from '../middleware/auth';
-import { BaseProjectModel, Project, ProjectBase, ProjectBaseZ, ProjectMetaData, ProjectZ } from './../db_schema/project';
+import { Project, ProjectBase, ProjectBaseZ, ProjectMetaData, ProjectZ } from './../db_schema/project';
 
 import { DemoModel } from '../db_schema/demo';
+import { DomainSpecificationModel } from '../db_schema/domain_specification';
 import { IterationStepModel } from '../db_schema/iteration_step';
 import { PlanPropertyModel } from '../db_schema/plan-properties/plan_property';
 import { ProjectModel } from '../db_schema/project';
+import { ServiceModel } from '../db_schema/services';
+import { PlanPilotRunCleanupError, removePlanPilotRuns } from '../services/planpilot-run-cleanup';
+import { defaultServiceIds } from '../services/project-services';
 
 export const projectRouter = express.Router();
 
@@ -21,8 +25,19 @@ projectRouter.post('/', auth, async (req: AuthenticatedRequest, res) => {
             return;
         }
 
+        const initialServiceIds = await resolveDefaultServiceIds(projectBaseData);
+
         const projectData : ProjectBase & {user: string} = {
             ...projectBaseData,
+            settings: {
+                ...projectBaseData.settings,
+                services: {
+                    ...projectBaseData.settings.services,
+                    services: projectBaseData.settings.services.services.length > 0
+                        ? projectBaseData.settings.services.services
+                        : initialServiceIds,
+                }
+            },
             user: req.user._id
         }
 
@@ -52,18 +67,47 @@ projectRouter.post('/', auth, async (req: AuthenticatedRequest, res) => {
     }
 });
 
+async function resolveDefaultServiceIds(project: ProjectBase): Promise<string[]> {
+    const domain = await DomainSpecificationModel.findById(project.domain);
+    const services = await ServiceModel.find({
+        $and: [
+            {
+                $or: [
+                    { domainId: null },
+                    { domainId: { $exists: false } },
+                    { domainId: project.domain },
+                ],
+            },
+            domain?.encoding ? { encoding: domain.encoding } : {},
+        ],
+    }).sort({ _id: 1 });
 
-projectRouter.put('/:id', auth, async (req, res) => {
+    return defaultServiceIds(services);
+}
+
+projectRouter.put('/:id', auth, async (req: AuthenticatedRequest, res) => {
     try {
+        if (!req.user) {
+            res.status(401).send();
+            return;
+        }
         const refId = req.params.id;
-        const project = await BaseProjectModel.findOne({ _id: refId});
+        const project = await ProjectModel.findOne({
+            _id: refId,
+            user: req.user._id,
+        });
 
         if (!project) {
             res.status(404).send('update project failed');
             return;
         }
 
-        const projectData = ProjectZ.parse(req.body);
+        const parsedProject = ProjectZ.safeParse(req.body);
+        if (!parsedProject.success) {
+            res.status(400).send({ message: 'Invalid project update.' });
+            return;
+        }
+        const projectData = parsedProject.data;
 
         project.name = projectData.name;
         project.description = projectData.description;
@@ -75,14 +119,15 @@ projectRouter.put('/:id', auth, async (req, res) => {
         res.send(project);
 
     } catch (ex : any) {
-        res.send(ex.message);
+        console.log(ex.message);
+        res.status(500).send();
     }
 });
 
 
 projectRouter.get('', auth, async (req: AuthenticatedRequest, res) => {
     if (!req.user) {
-        res.status(401);
+        res.status(401).send();
         return;
     }
     const projects: Project[] = await ProjectModel.find({ user: req.user._id});
@@ -136,7 +181,13 @@ projectRouter.get('/:id', authAny, async (req: AuthenticatedRequest, res) => {
             return;
         }
 
-        const project = await ProjectModel.findOne({ _id: id });
+        const project = await ProjectModel.findOne({
+            _id: id,
+            $or: [
+                { user: req.user._id },
+                { public: true },
+            ],
+        });
         if (project) { 
 
             if(req.user.role != 'user-study'){
@@ -154,7 +205,7 @@ projectRouter.get('/:id', authAny, async (req: AuthenticatedRequest, res) => {
             return;
         }
 
-        res.status(500).send({ message: 'No project found.' });
+        res.status(404).send({ message: 'No project found.' });
         return;
 
     } catch (ex : any) {
@@ -172,23 +223,25 @@ projectRouter.delete('/meta-data/:id', auth, async (req: AuthenticatedRequest, r
 
         const id = req.params.id;
 
-        // // delete iteration steps
-        const iterationsDeleteResult = await IterationStepModel.deleteMany({ project: id});
-        if (!iterationsDeleteResult) { 
-            res.status(404).send({ message: 'Problem during project deletion occurred' });
-            return; 
+        const project = await ProjectModel.findOne({
+            _id: id,
+            user: req.user._id,
+        });
+        if (!project) {
+            res.status(404).send({ message: 'No project found.' });
+            return;
         }
 
-        // // delete properties
-        const propertyDeleteResult = await PlanPropertyModel.deleteMany({ project: id});
-        if (!propertyDeleteResult) { 
-            res.status(404).send({ message: 'Problem during project deletion occurred' });
-            return; 
-        }
+        await removePlanPilotRuns({
+            userId: req.user._id,
+            projectId: project._id,
+        });
+        await IterationStepModel.deleteMany({ project: id});
+        await PlanPropertyModel.deleteMany({ project: id});
 
         // delete project itself
         const projectDeleteResult = await ProjectModel.deleteOne({ _id: id, user: req.user._id });
-        if (!projectDeleteResult) { 
+        if (projectDeleteResult.deletedCount !== 1) {
             res.status(404).send({ message: 'No project found.' });
             return; 
         }
@@ -196,9 +249,12 @@ projectRouter.delete('/meta-data/:id', auth, async (req: AuthenticatedRequest, r
         res.send(true);
 
     } catch (ex : any) {
+        if (ex instanceof PlanPilotRunCleanupError) {
+            res.status(ex.status).send({ message: ex.message });
+            return;
+        }
         console.log(ex);
         res.status(500).send();
     }
 
 });
-

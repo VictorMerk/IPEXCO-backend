@@ -6,14 +6,14 @@ import { Project, ProjectModel } from "../../db_schema/project";
 import { PropertyCheckerRequest } from "../../db_schema/service_communication";
 import { Service, ServiceModel, ServiceType } from "../../db_schema/services";
 import { callServices } from "../utils";
+import { hasValidPlanActions, planPropertyIdSet } from "../plan-result";
 
 
 export async function checkProperties(iterationStep: IterationStep & Document) {
 
     console.log('Check which properties are satisfied...')
 
-    if(!iterationStep.plan || !iterationStep.plan.actions
-    ){
+    if(!iterationStep.plan || !hasValidPlanActions(iterationStep.plan.actions)){
         console.log('[Property Check] Step has no valid plan.')
         console.log(iterationStep.plan);
         iterationStep.status = StepStatus.UNKNOWN;
@@ -27,8 +27,12 @@ export async function checkProperties(iterationStep: IterationStep & Document) {
 
     const baseURL = process.env.BASE_URL || 'http://host.docker.internal:3000'
 
-    const plan_properties = (await PlanPropertyModel.find({ project: iterationStep.project}) as PlanProperty[]).
-    filter(pp => pp._id && (iterationStep.hardGoals.includes(pp._id) || iterationStep.softGoals.includes(pp._id)));
+    const selectedPropertyIds = planPropertyIdSet([
+        ...iterationStep.hardGoals,
+        ...iterationStep.softGoals,
+    ]);
+    const plan_properties = (await PlanPropertyModel.find({ project: iterationStep.project}) as PlanProperty[])
+        .filter(pp => pp._id && selectedPropertyIds.has(pp._id.toString()));
 
     if (plan_properties.length === 0) {
         iterationStep.status = StepStatus.SOLVABLE;

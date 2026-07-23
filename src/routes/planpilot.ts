@@ -1,37 +1,60 @@
 import express from "express";
 import { boolean, object, string } from "zod";
 
-import { PDDLPlanningModel, toPDDL } from "../db_schema/PDDL_task";
-import { IterationStepModel, PlanRunStatus } from "../db_schema/iteration_step";
+import { toPDDL } from "../db_schema/PDDL_task";
 import {
   PlanPilotRunModel,
   PlanPilotRunStatus,
 } from "../db_schema/planpilot_run";
 import { ProjectModel } from "../db_schema/project";
 import {
+  ApplyPlanPilotFacetsRequestZ,
   PlanPilotSessionConfigurationZ,
   QueryPlanPilotSessionRequestZ,
   SelectPlanPilotFacetRequestZ,
-} from "../db_schema/service_communication";
-import { Service, ServiceModel, ServiceType } from "../db_schema/services";
+} from "../db_schema/planpilot_service_communication";
 import { AuthenticatedRequest, authAny } from "../middleware/auth";
 import {
+  applyPlanPilotFacets,
   createPlanPilotSession,
   getPlanPilotSession,
+  isMissingPlanPilotSession,
   listPlanPilotFacets,
-  PlanPilotClientError,
   queryPlanPilotSession,
   selectPlanPilotFacet,
   stopPlanPilotSession,
 } from "../services/planpilot";
+import {
+  isMongoDuplicateKey,
+  planPilotStartKey,
+  planPilotSourceFingerprint,
+  stalePlanPilotStartBefore,
+} from "../services/planpilot-run-lifecycle";
+import {
+  getRunContext,
+  getSelectedPlanPilotServices,
+  inspectPlanPilotSourceFingerprint,
+  isEmptyObject,
+  isServiceInProjectDomain,
+  markExpiredIfNeeded,
+  parseExpiresAt,
+  planPilotSourceConflict,
+  resolvePlanPilotSource,
+  retireSupersededPlanPilotRuns,
+  sanitizePlanPilotError,
+  sendPlanPilotRouteError,
+  serializeRun,
+  updatePlanPilotRunExpiry,
+} from "./planpilot-support";
 
 export const planPilotRouter = express.Router();
 
 const StartPlanPilotSessionZ = object({
-  iterationStepId: string(),
+  projectId: string().regex(/^[a-f\d]{24}$/i),
   horizon: PlanPilotSessionConfigurationZ.shape.horizon,
   encoding: PlanPilotSessionConfigurationZ.shape.encoding,
   abstractTimeSteps: boolean(),
+  stateFacets: boolean().optional().default(false),
 });
 
 planPilotRouter.post(
@@ -52,7 +75,7 @@ planPilotRouter.post(
 
       const request = requestData.data;
       const source = await resolvePlanPilotSource(
-        request.iterationStepId,
+        request.projectId,
         req.user._id,
         res,
       );
@@ -84,23 +107,82 @@ planPilotRouter.post(
         return;
       }
 
-      const [domainPddl, problemPddl] = toPDDL(
-        source.pddlModel,
-      );
+      let domainPddl: string;
+      let problemPddl: string;
+      try {
+        [domainPddl, problemPddl] = toPDDL(source.pddlModel);
+      } catch {
+        res.status(400).send({
+          message: "Project does not contain a valid PDDL planning task.",
+        });
+        return;
+      }
       const configuration = {
         horizon: request.horizon,
         encoding: request.encoding,
         abstractTimeSteps: request.abstractTimeSteps,
+        stateFacets: request.stateFacets,
       };
-      const run = await PlanPilotRunModel.create({
-        project: source.project._id,
-        user: req.user._id,
-        iterationStep: source.iterationStepId,
-        service: services[0]._id,
-        status: PlanPilotRunStatus.STARTING,
-        configuration,
+      const sourceFingerprint = planPilotSourceFingerprint({
+        domainPddl,
+        problemPddl,
       });
 
+      const startKey = planPilotStartKey({
+        userId: req.user._id,
+        projectId: source.project._id,
+        serviceId: services[0]._id,
+        sourceFingerprint,
+        configuration,
+      });
+      // Mark abandoned STARTING records as failed after the upstream deadline.
+      await PlanPilotRunModel.updateOne(
+        {
+          startKey,
+          status: PlanPilotRunStatus.STARTING,
+          updatedAt: { $lte: stalePlanPilotStartBefore() },
+        },
+        {
+          $set: {
+            status: PlanPilotRunStatus.FAILED,
+            error: "PlanPilot session preparation was interrupted.",
+          },
+          $unset: { startKey: 1 },
+        },
+      );
+      let run;
+      try {
+        run = await PlanPilotRunModel.create({
+          project: source.project._id,
+          user: req.user._id,
+          service: services[0]._id,
+          status: PlanPilotRunStatus.STARTING,
+          configuration,
+          startKey,
+          sourceFingerprint,
+        });
+      } catch (error) {
+        if (!isMongoDuplicateKey(error)) {
+          throw error;
+        }
+        const existingRun = await PlanPilotRunModel.findOne({
+          startKey,
+          status: PlanPilotRunStatus.STARTING,
+        });
+        if (!existingRun) {
+          throw error;
+        }
+        res.set("Retry-After", "2");
+        res.status(409).send({
+          message:
+            "Another PlanPilot session for this source is being prepared. Retry to create an independent session.",
+          code: "PLANPILOT_SESSION_START_CONFLICT",
+          runId: existingRun._id,
+        });
+        return;
+      }
+
+      let createdExternalSessionId: string | undefined;
       try {
         const session = await createPlanPilotSession(services[0], {
           task: { domainPddl, problemPddl },
@@ -109,15 +191,56 @@ planPilotRouter.post(
             system: "IPEXCO",
             runId: run._id,
             projectId: source.project._id,
-            iterationStepId: source.iterationStepId,
           },
         });
+        createdExternalSessionId = session.sessionId;
+
+        const currentSource = await inspectPlanPilotSourceFingerprint(
+          source.project._id,
+          req.user._id,
+        );
+        const sourceConflict = planPilotSourceConflict(
+          currentSource,
+          sourceFingerprint,
+        );
+        if (sourceConflict) {
+          try {
+            await stopPlanPilotSession(services[0], session.sessionId);
+          } catch (error) {
+            if (!isMissingPlanPilotSession(error)) {
+              run.externalSessionId = session.sessionId;
+              run.status = PlanPilotRunStatus.FAILED;
+              run.startKey = undefined;
+              run.error = `${sourceConflict.message} The external session still needs cleanup.`;
+              await run.save().catch((saveError) => {
+                console.error("Could not retain the PlanPilot cleanup record:", saveError);
+              });
+              sendPlanPilotRouteError(res, error);
+              return;
+            }
+          }
+          await PlanPilotRunModel.deleteOne({ _id: run._id });
+          res.status(409).send(sourceConflict);
+          return;
+        }
 
         run.externalSessionId = session.sessionId;
         run.status = PlanPilotRunStatus.READY;
+        run.startKey = undefined;
         run.configuration = session.configuration;
         run.expiresAt = parseExpiresAt(session.expiresAt);
         await run.save();
+
+        await retireSupersededPlanPilotRuns(
+          req.user._id,
+          source.project._id,
+          services[0],
+          sourceFingerprint,
+        ).catch((error) => {
+          console.warn(
+            `Could not retire superseded PlanPilot runs: ${sanitizePlanPilotError(error)}`,
+          );
+        });
 
         res.status(201).send({
           runId: run._id,
@@ -125,10 +248,33 @@ planPilotRouter.post(
           status: run.status,
           configuration: session.configuration,
           expiresAt: run.expiresAt,
+          hasPlan: session.hasPlan,
+          minimumHorizon: session.minimumHorizon,
+          selectionRevision: session.selectionRevision,
+          solutionCount: session.solutionCount,
+          solution: session.solution,
           facets: session.facets,
+          reused: false,
         });
       } catch (error) {
+        if (createdExternalSessionId) {
+          try {
+            await stopPlanPilotSession(services[0], createdExternalSessionId);
+          } catch (stopError) {
+            if (!isMissingPlanPilotSession(stopError)) {
+              console.error("Could not clean up a failed PlanPilot session start:", stopError);
+            }
+          }
+        }
+        if (!(await planPilotSourceExists(
+          req.user._id,
+          source.project._id,
+        ))) {
+          await PlanPilotRunModel.deleteOne({ _id: run._id });
+          throw error;
+        }
         run.status = PlanPilotRunStatus.FAILED;
+        run.startKey = undefined;
         run.error = sanitizePlanPilotError(error);
         await run.save();
         throw error;
@@ -139,12 +285,22 @@ planPilotRouter.post(
   },
 );
 
+async function planPilotSourceExists(
+  userId: unknown,
+  projectId: unknown,
+): Promise<boolean> {
+  return Boolean(await ProjectModel.exists({ _id: projectId, user: userId }));
+}
+
 planPilotRouter.get(
   "/sessions/:id",
   authAny,
   async (req: AuthenticatedRequest, res) => {
     try {
-      const context = await getRunContext(req, res, { allowTerminal: true });
+      const context = await getRunContext(req, res, {
+        allowTerminal: true,
+        skipServiceLookupForTerminal: true,
+      });
       if (!context) {
         return;
       }
@@ -155,6 +311,16 @@ planPilotRouter.get(
         context.run.status === PlanPilotRunStatus.EXPIRED
       ) {
         res.status(200).send(serializeRun(context.run));
+        return;
+      }
+
+      if (!context.run.externalSessionId) {
+        res.status(200).send(serializeRun(context.run));
+        return;
+      }
+
+      if (!context.service) {
+        res.status(400).send({ message: "PlanPilot service for this run is not available." });
         return;
       }
 
@@ -198,7 +364,14 @@ planPilotRouter.post(
         context.service,
         context.run.externalSessionId!,
       );
-      res.status(200).send({ runId: context.run._id, facets: response.facets });
+      await updatePlanPilotRunExpiry(context.run, response.expiresAt);
+      res.status(200).send({
+        runId: context.run._id,
+        selectionRevision: response.selectionRevision,
+        solutionCount: response.solutionCount,
+        solution: response.solution,
+        facets: response.facets,
+      });
     } catch (error) {
       await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
@@ -229,7 +402,50 @@ planPilotRouter.post(
         context.run.externalSessionId!,
         requestData.data,
       );
-      res.status(200).send({ runId: context.run._id, facets: response.facets });
+      await updatePlanPilotRunExpiry(context.run, response.expiresAt);
+      res.status(200).send({
+        runId: context.run._id,
+        selectionRevision: response.selectionRevision,
+        solutionCount: response.solutionCount,
+        solution: response.solution,
+        facets: response.facets,
+      });
+    } catch (error) {
+      await markExpiredIfNeeded(req.params.id, req.user?._id, error);
+      sendPlanPilotRouteError(res, error);
+    }
+  },
+);
+
+planPilotRouter.post(
+  "/sessions/:id/facets/apply",
+  authAny,
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const context = await getRunContext(req, res);
+      if (!context) {
+        return;
+      }
+
+      const requestData = ApplyPlanPilotFacetsRequestZ.safeParse(req.body);
+      if (!requestData.success) {
+        res.status(400).send({ message: "Invalid PlanPilot facet batch request." });
+        return;
+      }
+
+      const response = await applyPlanPilotFacets(
+        context.service,
+        context.run.externalSessionId!,
+        requestData.data,
+      );
+      await updatePlanPilotRunExpiry(context.run, response.expiresAt);
+      res.status(200).send({
+        runId: context.run._id,
+        selectionRevision: response.selectionRevision,
+        solutionCount: response.solutionCount,
+        solution: response.solution,
+        facets: response.facets,
+      });
     } catch (error) {
       await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
@@ -258,7 +474,13 @@ planPilotRouter.post(
         context.run.externalSessionId!,
         requestData.data,
       );
-      res.status(200).send({ runId: context.run._id, result: response.result });
+      await updatePlanPilotRunExpiry(context.run, response.expiresAt);
+      res.status(200).send({
+        runId: context.run._id,
+        selectionRevision: response.selectionRevision,
+        solutionCount: response.solutionCount,
+        result: response.result,
+      });
     } catch (error) {
       await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
@@ -271,20 +493,50 @@ planPilotRouter.delete(
   authAny,
   async (req: AuthenticatedRequest, res) => {
     try {
-      const context = await getRunContext(req, res);
+      const context = await getRunContext(req, res, { allowTerminal: true });
       if (!context) {
         return;
       }
 
-      const response = await stopPlanPilotSession(
-        context.service,
-        context.run.externalSessionId!,
-      );
+      if (
+        !context.run.externalSessionId
+        || context.run.status === PlanPilotRunStatus.STOPPED
+        || context.run.status === PlanPilotRunStatus.EXPIRED
+      ) {
+        res.status(200).send({
+          runId: context.run._id,
+          externalSessionId: context.run.externalSessionId,
+          status: context.run.status,
+        });
+        return;
+      }
+
+      let stoppedExternalSessionId = context.run.externalSessionId;
+      try {
+        const response = await stopPlanPilotSession(
+          context.service,
+          context.run.externalSessionId,
+        );
+        stoppedExternalSessionId = response.sessionId;
+      } catch (error) {
+        if (!isMissingPlanPilotSession(error)) {
+          throw error;
+        }
+        context.run.status = PlanPilotRunStatus.EXPIRED;
+        context.run.error = sanitizePlanPilotError(error);
+        await context.run.save();
+        res.status(200).send({
+          runId: context.run._id,
+          externalSessionId: context.run.externalSessionId,
+          status: context.run.status,
+        });
+        return;
+      }
       context.run.status = PlanPilotRunStatus.STOPPED;
       await context.run.save();
       res.status(200).send({
         runId: context.run._id,
-        externalSessionId: response.sessionId,
+        externalSessionId: stoppedExternalSessionId,
         status: context.run.status,
       });
     } catch (error) {
@@ -293,194 +545,3 @@ planPilotRouter.delete(
     }
   },
 );
-
-async function getSelectedPlanPilotServices(
-  serviceIds: string[],
-): Promise<Service[]> {
-  const services: Service[] = [];
-
-  for (const serviceId of serviceIds) {
-    const service = await ServiceModel.findById(serviceId);
-    if (service && service.type === ServiceType.PLANPILOT) {
-      services.push(service);
-    }
-  }
-
-  return services;
-}
-
-async function resolvePlanPilotSource(
-  iterationStepId: string,
-  userId: unknown,
-  res: express.Response,
-) {
-  const step = await IterationStepModel.findOne({
-    _id: iterationStepId,
-    user: userId,
-  });
-
-  if (!step) {
-    res.status(404).send({ message: "Iteration step not found." });
-    return null;
-  }
-
-  if (step.plan?.status !== PlanRunStatus.SOLVED) {
-    res.status(400).send({ message: "PlanPilot requires a solved iteration-step plan." });
-    return null;
-  }
-
-  const project = await ProjectModel.findById(step.project);
-  if (!project) {
-    res.status(404).send({ message: "Project not found." });
-    return null;
-  }
-
-  return {
-    project,
-    iterationStepId: step._id,
-    pddlModel: step.task.model as PDDLPlanningModel,
-  };
-}
-
-async function getRunContext(
-  req: AuthenticatedRequest,
-  res: express.Response,
-  options: { allowTerminal?: boolean } = {},
-) {
-  if (!req.user) {
-    res.status(401).send();
-    return null;
-  }
-
-  const run = await PlanPilotRunModel.findOne({
-    _id: req.params.id,
-    user: req.user._id,
-  });
-  if (!run) {
-    res.status(404).send({ message: "PlanPilot run not found." });
-    return null;
-  }
-
-  if (!options.allowTerminal && run.status === PlanPilotRunStatus.STOPPED) {
-    res.status(409).send({ message: "PlanPilot run is already stopped." });
-    return null;
-  }
-
-  if (!options.allowTerminal && run.status === PlanPilotRunStatus.EXPIRED) {
-    res.status(410).send({ message: "PlanPilot run has expired." });
-    return null;
-  }
-
-  if (!options.allowTerminal && run.status === PlanPilotRunStatus.FAILED) {
-    res.status(409).send({ message: "PlanPilot run has failed." });
-    return null;
-  }
-
-  if (!options.allowTerminal && !run.externalSessionId) {
-    res.status(409).send({ message: "PlanPilot run is not ready." });
-    return null;
-  }
-
-  const service = await ServiceModel.findById(run.service);
-  if (!service || service.type !== ServiceType.PLANPILOT) {
-    res
-      .status(400)
-      .send({ message: "PlanPilot service for this run is not available." });
-    return null;
-  }
-
-  return { run, service };
-}
-
-function isEmptyObject(value: unknown): boolean {
-  return Boolean(
-    value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    Object.keys(value).length === 0,
-  );
-}
-
-function isServiceInProjectDomain(
-  service: Service,
-  projectDomainId: unknown,
-): boolean {
-  if (!service.domainId) {
-    return true;
-  }
-  if (!projectDomainId) {
-    return false;
-  }
-  return String(service.domainId) === String(projectDomainId);
-}
-
-function parseExpiresAt(value: string | undefined): Date | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : date;
-}
-
-function sanitizePlanPilotError(error: unknown): string {
-  if (error instanceof PlanPilotClientError) {
-    return error.message;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return "PlanPilot request failed.";
-}
-
-async function markExpiredIfNeeded(
-  runId: string,
-  userId: unknown,
-  error: unknown,
-): Promise<void> {
-  if (
-    !(error instanceof PlanPilotClientError) ||
-    error.code !== "SESSION_EXPIRED" ||
-    !userId
-  ) {
-    return;
-  }
-  await PlanPilotRunModel.updateOne(
-    { _id: runId, user: userId },
-    { status: PlanPilotRunStatus.EXPIRED },
-  );
-}
-
-function serializeRun(run: {
-  _id: unknown;
-  externalSessionId?: string | null;
-  status: PlanPilotRunStatus;
-  configuration: unknown;
-  error?: string | null;
-  expiresAt?: Date | null;
-  createdAt?: Date;
-  updatedAt?: Date;
-}) {
-  return {
-    runId: run._id,
-    externalSessionId: run.externalSessionId,
-    status: run.status,
-    configuration: run.configuration,
-    error: run.error,
-    expiresAt: run.expiresAt,
-    createdAt: run.createdAt,
-    updatedAt: run.updatedAt,
-  };
-}
-
-function sendPlanPilotRouteError(res: express.Response, error: unknown): void {
-  if (error instanceof PlanPilotClientError) {
-    res.status(error.status ?? 502).send({
-      message: error.message,
-      code: error.code ?? "PLANPILOT_FAILED",
-    });
-    return;
-  }
-
-  console.log(error);
-  res.status(500).send();
-}
