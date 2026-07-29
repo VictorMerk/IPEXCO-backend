@@ -9,12 +9,17 @@ import {
   GetPlanPilotSessionResponseZ,
   ListPlanPilotFacetsResponse,
   ListPlanPilotFacetsResponseZ,
+  PlanPilotCapabilities,
+  PlanPilotCapabilitiesZ,
+  PlanPilotQueryJob,
+  PlanPilotQueryJobZ,
   QueryPlanPilotSessionRequest,
   QueryPlanPilotSessionResponse,
   QueryPlanPilotSessionResponseZ,
   SelectPlanPilotFacetRequest,
   SelectPlanPilotFacetResponse,
   SelectPlanPilotFacetResponseZ,
+  StartPlanPilotQueryJobRequest,
   StopPlanPilotSessionResponse,
   StopPlanPilotSessionResponseZ,
 } from "../db_schema/planpilot_service_communication";
@@ -53,6 +58,18 @@ export async function createPlanPilotSession(
     "/api/sessions",
     payload,
     CreatePlanPilotSessionResponseZ,
+  );
+}
+
+export async function getPlanPilotCapabilities(
+  service: Service,
+): Promise<PlanPilotCapabilities> {
+  return requestPlanPilot(
+    service,
+    "/api/capabilities",
+    "GET",
+    undefined,
+    PlanPilotCapabilitiesZ,
   );
 }
 
@@ -117,6 +134,47 @@ export async function queryPlanPilotSession(
     `/api/sessions/${encodeURIComponent(externalSessionId)}/query`,
     payload,
     QueryPlanPilotSessionResponseZ,
+  );
+}
+
+export async function startPlanPilotQueryJob(
+  service: Service,
+  externalSessionId: string,
+  payload: StartPlanPilotQueryJobRequest,
+): Promise<PlanPilotQueryJob> {
+  return postPlanPilot(
+    service,
+    `/api/sessions/${encodeURIComponent(externalSessionId)}/jobs`,
+    payload,
+    PlanPilotQueryJobZ,
+  );
+}
+
+export async function getPlanPilotQueryJob(
+  service: Service,
+  externalSessionId: string,
+  jobId: string,
+): Promise<PlanPilotQueryJob> {
+  return requestPlanPilot(
+    service,
+    `/api/sessions/${encodeURIComponent(externalSessionId)}/jobs/${encodeURIComponent(jobId)}`,
+    "GET",
+    undefined,
+    PlanPilotQueryJobZ,
+  );
+}
+
+export async function cancelPlanPilotQueryJob(
+  service: Service,
+  externalSessionId: string,
+  jobId: string,
+): Promise<PlanPilotQueryJob> {
+  return requestPlanPilot(
+    service,
+    `/api/sessions/${encodeURIComponent(externalSessionId)}/jobs/${encodeURIComponent(jobId)}`,
+    "DELETE",
+    undefined,
+    PlanPilotQueryJobZ,
   );
 }
 

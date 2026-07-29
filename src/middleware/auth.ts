@@ -67,7 +67,7 @@ export const auth = async(req: AuthenticatedRequest, res: Response, next: NextFu
             return;
         }
         if (user.role != 'admin' && user.role != 'creator') {
-            res.status(401).send({ error: errorMessage });
+            res.status(403).send({ error: errorMessage });
             return;
         }
         req.user = user;
@@ -99,7 +99,7 @@ export const authAdmin = async(req: AuthenticatedRequest, res: Response, next: N
             return;
         }
         if (user.role != 'admin') {
-            res.status(401).send({ error: errorMessage });
+            res.status(403).send({ error: errorMessage });
             return;
         }
         req.user = user;

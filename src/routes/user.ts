@@ -3,7 +3,7 @@ import { environment } from '../app';
 import { User, UserData, UserModel } from '../db_schema/user';
 import { UserStudy, UserStudyModel } from '../db_schema/user-study/user-study';
 import { UserStudyExecutionModel } from '../db_schema/user-study/user-study-execution';
-import { authAny, AuthenticatedRequest, authForward } from './../middleware/auth';
+import { authAny, AuthenticatedRequest } from './../middleware/auth';
 
 export const userRouter = express.Router();
 
@@ -121,29 +121,19 @@ userRouter.post('/', async (req, res) => {
     }
 });
 
-userRouter.post('/login', authForward, async(req: AuthenticatedRequest, res: Response) => {
+userRouter.post('/login', async(req: AuthenticatedRequest, res: Response) => {
     try {
-        if (req.user) {
-            if(req.user.role == 'user-study'){
-                res.status(401).send({ error: 'Login failed! User study users cannot login'});
-                return;
-            }
-            res.send({ user: req.user, token: req.token });
-        }
         const username = req.body.name;
         const password = req.body.password;
         if(username == null || password == null){
-            res.status(401).send({ error: 'Login failed! Check authentication credentials'});
+            res.status(400).send({ error: 'User name and password are required.'});
             return;
         }
 
         const user = await (UserModel as any).findByCredentials(username, password);
         if (!user) {
-            res.send({data: {
-                user: null,
-                token: null
-            }})
-            return 
+            res.status(401).send({ error: 'Login failed. Check your user name and password.'});
+            return;
         }
 
         const token = await user.generateAuthToken();
@@ -185,17 +175,14 @@ userRouter.get('', authAny, async(req: AuthenticatedRequest, res) => {
     }
 });
 
-userRouter.post('/logout', authForward, async (req: AuthenticatedRequest, res) => {
+userRouter.post('/logout', authAny, async (req: AuthenticatedRequest, res) => {
     try {
-        if (req.user) {
-            req.user.tokens = req.user.tokens.filter((token: {token: string}) => token.token !== req.token);
-            await req.user.save();
-        }
+        req.user!.tokens = req.user!.tokens.filter((token: {token: string}) => token.token !== req.token);
+        await req.user!.save();
 
-        res.send(true);
+        res.send({data: true});
     } catch (error) {
         console.log(error);
         res.status(500).send(false);
     }
 });
-

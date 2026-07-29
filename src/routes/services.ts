@@ -1,7 +1,7 @@
 import express from 'express';
 
 import { Service, ServiceBaseZ, ServiceModel } from '../db_schema/services';
-import { auth, authAdmin, authAny } from '../middleware/auth';
+import { auth, authAny } from '../middleware/auth';
 
 export const serviceRouter = express.Router();
 
@@ -70,7 +70,7 @@ serviceRouter.get('', authAny, async (req, res) => {
 });
 
 
-serviceRouter.delete('/:id', authAdmin, async (req, res) => {
+serviceRouter.delete('/:id', auth, async (req, res) => {
 
     try{
         const result = await ServiceModel.deleteOne({ _id: req.params.id});
@@ -87,6 +87,5 @@ serviceRouter.delete('/:id', authAdmin, async (req, res) => {
         res.status(500).send();
     }
 });
-
 
 

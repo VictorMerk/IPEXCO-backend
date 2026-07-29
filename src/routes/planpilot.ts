@@ -12,16 +12,21 @@ import {
   PlanPilotSessionConfigurationZ,
   QueryPlanPilotSessionRequestZ,
   SelectPlanPilotFacetRequestZ,
+  StartPlanPilotQueryJobRequestZ,
 } from "../db_schema/planpilot_service_communication";
 import { AuthenticatedRequest, authAny } from "../middleware/auth";
 import {
   applyPlanPilotFacets,
+  cancelPlanPilotQueryJob,
   createPlanPilotSession,
+  getPlanPilotCapabilities,
+  getPlanPilotQueryJob,
   getPlanPilotSession,
   isMissingPlanPilotSession,
   listPlanPilotFacets,
   queryPlanPilotSession,
   selectPlanPilotFacet,
+  startPlanPilotQueryJob,
   stopPlanPilotSession,
 } from "../services/planpilot";
 import {
@@ -42,6 +47,7 @@ import {
   resolvePlanPilotSource,
   retireSupersededPlanPilotRuns,
   sanitizePlanPilotError,
+  sendPlanPilotApiError,
   sendPlanPilotRouteError,
   serializeRun,
   updatePlanPilotRunExpiry,
@@ -57,19 +63,157 @@ const StartPlanPilotSessionZ = object({
   stateFacets: boolean().optional().default(false),
 });
 
+planPilotRouter.get(
+  "/capabilities/:projectId",
+  authAny,
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      if (!req.user) {
+        sendPlanPilotApiError(
+          res,
+          401,
+          "UNAUTHORIZED",
+          "Authentication is required.",
+        );
+        return;
+      }
+      if (!/^[a-f\d]{24}$/i.test(req.params.projectId)) {
+        sendPlanPilotApiError(
+          res,
+          400,
+          "INVALID_PROJECT_ID",
+          "Invalid project ID.",
+        );
+        return;
+      }
+      const project = await ProjectModel.findOne({
+        _id: req.params.projectId,
+        user: req.user._id,
+      });
+      if (!project) {
+        sendPlanPilotApiError(
+          res,
+          404,
+          "PROJECT_NOT_FOUND",
+          "Project not found.",
+        );
+        return;
+      }
+      const selected = await getSelectedPlanPilotServices(
+        project.settings.services.services,
+      );
+      const services = selected.filter((service) =>
+        isServiceInProjectDomain(service, project.domain),
+      );
+      if (services.length !== 1) {
+        sendPlanPilotApiError(
+          res,
+          400,
+          "PLANPILOT_SERVICE_SELECTION_INVALID",
+          services.length === 0
+            ? "Select a PlanPilot service for this project."
+            : "Select only one PlanPilot service for this project.",
+        );
+        return;
+      }
+      const capabilities = await getPlanPilotCapabilities(services[0]);
+      res.status(200).send({
+        serviceId: services[0]._id,
+        serviceName: services[0].name,
+        ...capabilities,
+      });
+    } catch (error) {
+      sendPlanPilotRouteError(res, error);
+    }
+  },
+);
+
+planPilotRouter.get(
+  "/sessions",
+  authAny,
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      if (!req.user) {
+        sendPlanPilotApiError(
+          res,
+          401,
+          "UNAUTHORIZED",
+          "Authentication is required.",
+        );
+        return;
+      }
+      const projectId =
+        typeof req.query.projectId === "string" ? req.query.projectId : undefined;
+      if (projectId && !/^[a-f\d]{24}$/i.test(projectId)) {
+        sendPlanPilotApiError(
+          res,
+          400,
+          "INVALID_PROJECT_ID",
+          "Invalid project ID.",
+        );
+        return;
+      }
+
+      await PlanPilotRunModel.updateMany(
+        {
+          user: req.user._id,
+          status: PlanPilotRunStatus.READY,
+          expiresAt: { $lte: new Date() },
+        },
+        { $set: { status: PlanPilotRunStatus.EXPIRED } },
+      );
+      const runs = await PlanPilotRunModel.find({
+        user: req.user._id,
+        ...(projectId ? { project: projectId } : {}),
+        status: {
+          $in: [PlanPilotRunStatus.STARTING, PlanPilotRunStatus.READY],
+        },
+      }).sort({ updatedAt: -1 });
+      const projectIds = [...new Set(runs.map((run) => String(run.project)))];
+      const projects = await ProjectModel.find({
+        _id: { $in: projectIds },
+        user: req.user._id,
+      }).select({ _id: 1, name: 1 });
+      const names = new Map(
+        projects.map((project) => [String(project._id), project.name]),
+      );
+      res.status(200).send({
+        sessions: runs.map((run) => ({
+          ...serializeRun(run),
+          projectId: run.project,
+          projectName: names.get(String(run.project)) ?? "Project",
+          current: false,
+        })),
+      });
+    } catch (error) {
+      sendPlanPilotRouteError(res, error);
+    }
+  },
+);
+
 planPilotRouter.post(
   "/sessions",
   authAny,
   async (req: AuthenticatedRequest, res) => {
     try {
       if (!req.user) {
-        res.status(401).send();
+        sendPlanPilotApiError(
+          res,
+          401,
+          "UNAUTHORIZED",
+          "Authentication is required.",
+        );
         return;
       }
 
       const requestData = StartPlanPilotSessionZ.safeParse(req.body);
       if (!requestData.success) {
-        res.status(400).send({ message: "Invalid PlanPilot session request." });
+        sendPlanPilotApiError(
+          res,
+          400,
+          "INVALID_SESSION_REQUEST",
+          "Invalid PlanPilot session request.",
+        );
         return;
       }
 
@@ -90,20 +234,31 @@ planPilotRouter.post(
         isServiceInProjectDomain(service, source.project.domain),
       );
       if (selectedServices.length > 0 && services.length === 0) {
-        res.status(400).send({
-          message: "No selected PlanPilot service matches project domain.",
-        });
+        sendPlanPilotApiError(
+          res,
+          400,
+          "PLANPILOT_SERVICE_DOMAIN_MISMATCH",
+          "No selected PlanPilot service matches the project domain.",
+        );
         return;
       }
       if (services.length === 0) {
-        res.status(400).send({ message: "No PlanPilot service selected." });
+        sendPlanPilotApiError(
+          res,
+          400,
+          "PLANPILOT_SERVICE_NOT_SELECTED",
+          "No PlanPilot service is selected.",
+        );
         return;
       }
 
       if (services.length > 1) {
-        res
-          .status(400)
-          .send({ message: "Select one PlanPilot service for the project." });
+        sendPlanPilotApiError(
+          res,
+          400,
+          "PLANPILOT_SERVICE_SELECTION_INVALID",
+          "Select one PlanPilot service for the project.",
+        );
         return;
       }
 
@@ -112,9 +267,12 @@ planPilotRouter.post(
       try {
         [domainPddl, problemPddl] = toPDDL(source.pddlModel);
       } catch {
-        res.status(400).send({
-          message: "Project does not contain a valid PDDL planning task.",
-        });
+        sendPlanPilotApiError(
+          res,
+          400,
+          "INVALID_PLANNING_TASK",
+          "Project does not contain a valid PDDL planning task.",
+        );
         return;
       }
       const configuration = {
@@ -173,12 +331,13 @@ planPilotRouter.post(
           throw error;
         }
         res.set("Retry-After", "2");
-        res.status(409).send({
-          message:
-            "Another PlanPilot session for this source is being prepared. Retry to create an independent session.",
-          code: "PLANPILOT_SESSION_START_CONFLICT",
-          runId: existingRun._id,
-        });
+        sendPlanPilotApiError(
+          res,
+          409,
+          "PLANPILOT_SESSION_START_CONFLICT",
+          "Another PlanPilot session for this source is being prepared. Retry to create an independent session.",
+          { runId: existingRun._id },
+        );
         return;
       }
 
@@ -220,7 +379,12 @@ planPilotRouter.post(
             }
           }
           await PlanPilotRunModel.deleteOne({ _id: run._id });
-          res.status(409).send(sourceConflict);
+          sendPlanPilotApiError(
+            res,
+            409,
+            sourceConflict.code,
+            sourceConflict.message,
+          );
           return;
         }
 
@@ -320,7 +484,12 @@ planPilotRouter.get(
       }
 
       if (!context.service) {
-        res.status(400).send({ message: "PlanPilot service for this run is not available." });
+        sendPlanPilotApiError(
+          res,
+          400,
+          "PLANPILOT_SERVICE_UNAVAILABLE",
+          "PlanPilot service for this run is not available.",
+        );
         return;
       }
 
@@ -354,9 +523,12 @@ planPilotRouter.post(
       }
 
       if (!isEmptyObject(req.body)) {
-        res
-          .status(400)
-          .send({ message: "Facet list body must be an empty JSON object." });
+        sendPlanPilotApiError(
+          res,
+          400,
+          "INVALID_FACET_LIST_REQUEST",
+          "Facet list body must be an empty JSON object.",
+        );
         return;
       }
 
@@ -391,9 +563,12 @@ planPilotRouter.post(
 
       const requestData = SelectPlanPilotFacetRequestZ.safeParse(req.body);
       if (!requestData.success) {
-        res
-          .status(400)
-          .send({ message: "Invalid PlanPilot facet selection request." });
+        sendPlanPilotApiError(
+          res,
+          400,
+          "INVALID_FACET_SELECTION",
+          "Invalid PlanPilot facet selection request.",
+        );
         return;
       }
 
@@ -429,7 +604,12 @@ planPilotRouter.post(
 
       const requestData = ApplyPlanPilotFacetsRequestZ.safeParse(req.body);
       if (!requestData.success) {
-        res.status(400).send({ message: "Invalid PlanPilot facet batch request." });
+        sendPlanPilotApiError(
+          res,
+          400,
+          "INVALID_FACET_BATCH",
+          "Invalid PlanPilot facet batch request.",
+        );
         return;
       }
 
@@ -465,7 +645,12 @@ planPilotRouter.post(
 
       const requestData = QueryPlanPilotSessionRequestZ.safeParse(req.body);
       if (!requestData.success) {
-        res.status(400).send({ message: "Invalid PlanPilot query request." });
+        sendPlanPilotApiError(
+          res,
+          400,
+          "INVALID_QUERY",
+          "Invalid PlanPilot query request.",
+        );
         return;
       }
 
@@ -481,6 +666,85 @@ planPilotRouter.post(
         solutionCount: response.solutionCount,
         result: response.result,
       });
+    } catch (error) {
+      await markExpiredIfNeeded(req.params.id, req.user?._id, error);
+      sendPlanPilotRouteError(res, error);
+    }
+  },
+);
+
+planPilotRouter.post(
+  "/sessions/:id/jobs",
+  authAny,
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const context = await getRunContext(req, res);
+      if (!context) {
+        return;
+      }
+      const requestData = StartPlanPilotQueryJobRequestZ.safeParse(req.body);
+      if (!requestData.success) {
+        sendPlanPilotApiError(
+          res,
+          400,
+          "INVALID_PLANPILOT_JOB",
+          "Invalid PlanPilot job request.",
+        );
+        return;
+      }
+      const job = await startPlanPilotQueryJob(
+        context.service,
+        context.run.externalSessionId!,
+        requestData.data,
+      );
+      await updatePlanPilotRunExpiry(context.run, job.expiresAt);
+      res.status(202).send({ runId: context.run._id, ...job });
+    } catch (error) {
+      await markExpiredIfNeeded(req.params.id, req.user?._id, error);
+      sendPlanPilotRouteError(res, error);
+    }
+  },
+);
+
+planPilotRouter.get(
+  "/sessions/:id/jobs/:jobId",
+  authAny,
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const context = await getRunContext(req, res);
+      if (!context) {
+        return;
+      }
+      const job = await getPlanPilotQueryJob(
+        context.service,
+        context.run.externalSessionId!,
+        req.params.jobId,
+      );
+      await updatePlanPilotRunExpiry(context.run, job.expiresAt);
+      res.status(200).send({ runId: context.run._id, ...job });
+    } catch (error) {
+      await markExpiredIfNeeded(req.params.id, req.user?._id, error);
+      sendPlanPilotRouteError(res, error);
+    }
+  },
+);
+
+planPilotRouter.delete(
+  "/sessions/:id/jobs/:jobId",
+  authAny,
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const context = await getRunContext(req, res);
+      if (!context) {
+        return;
+      }
+      const job = await cancelPlanPilotQueryJob(
+        context.service,
+        context.run.externalSessionId!,
+        req.params.jobId,
+      );
+      await updatePlanPilotRunExpiry(context.run, job.expiresAt);
+      res.status(200).send({ runId: context.run._id, ...job });
     } catch (error) {
       await markExpiredIfNeeded(req.params.id, req.user?._id, error);
       sendPlanPilotRouteError(res, error);
