@@ -53,6 +53,10 @@ Optional environment variables:
 
 - `ALLOW_REGISTRATION` set to `true` allows new users to register (default `false`)
 - `ALLOW_USER_STUDY_USERS` set to `true` allows users to participate in a user study
+- `CORS_ORIGIN` comma-separated browser origins allowed to call the API
+  (default `http://localhost:4200`)
+- `PLANPILOT_REQUEST_TIMEOUT_MS` deadline for PlanPilot service calls in
+  milliseconds (default `345000`)
 - `OPENAI_API_KEY`: the API key for the OpenAI service. It is mandatory to set this variable with your own valid key if you want to use the LLM interfaces. These keys are generated from the Open AI Platform (https://platform.openai.com/api-keys).
 
 
