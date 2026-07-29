@@ -55,7 +55,9 @@ export const PlanPilotFacetZ = object({
   abstractTimeStep: boolean().optional(),
   facetKind: zenum(["action", "state"]).optional().default("action"),
   selectable: boolean().optional(),
-  facetType: optional(zenum(["plan", "selected", "implied", "optional", "empty"])),
+  facetType: optional(
+    zenum(["plan", "selected", "implied", "optional", "empty"]),
+  ),
   parentId: optional(string().trim().min(1)),
   impliedBy: optional(array(string().trim().min(1))),
   causedBy: optional(string().trim().min(1)),
@@ -63,28 +65,27 @@ export const PlanPilotFacetZ = object({
   remaining: PlanPilotFacetRemainingMetricsZ.optional(),
 }).superRefine((facet, context) => {
   const isAbstract = facet.abstractTimeStep === true;
-  if (
-    facet.facetKind === "state"
-    && (facet.timestep === null || isAbstract)
-  ) {
+  if (facet.facetKind === "state" && (facet.timestep === null || isAbstract)) {
     context.addIssue({
       code: ZodIssueCode.custom,
       path: ["timestep"],
-      message: "State facets must have a concrete state timestep and cannot be abstract.",
+      message:
+        "State facets must have a concrete state timestep and cannot be abstract.",
     });
   } else if (
-    facet.facetKind === "action"
-    && (isAbstract !== (facet.timestep === null) || facet.timestep === 0)
+    facet.facetKind === "action" &&
+    (isAbstract !== (facet.timestep === null) || facet.timestep === 0)
   ) {
     context.addIssue({
       code: ZodIssueCode.custom,
       path: ["timestep"],
-      message: "Abstract facets must use a null timestep; concrete facets must use a positive timestep.",
+      message:
+        "Abstract facets must use a null timestep; concrete facets must use a positive timestep.",
     });
   }
   if (
-    facet.facetType === "implied"
-    && (facet.selectionState !== "neutral" || facet.selectable !== false)
+    facet.facetType === "implied" &&
+    (facet.selectionState !== "neutral" || facet.selectable !== false)
   ) {
     context.addIssue({
       code: ZodIssueCode.custom,
@@ -100,11 +101,12 @@ export const PlanPilotSolutionZ = object({
   label: string().trim().min(1),
   facets: array(PlanPilotFacetZ),
 }).superRefine((solution, context) => {
-  const ordered = [...solution.facets].sort((left, right) => (
-    (left.timestep ?? Number.MAX_SAFE_INTEGER)
-      - (right.timestep ?? Number.MAX_SAFE_INTEGER)
-    || left.id.localeCompare(right.id)
-  ));
+  const ordered = [...solution.facets].sort(
+    (left, right) =>
+      (left.timestep ?? Number.MAX_SAFE_INTEGER) -
+        (right.timestep ?? Number.MAX_SAFE_INTEGER) ||
+      left.id.localeCompare(right.id),
+  );
 
   ordered.forEach((facet, index) => {
     const sourceIndex = solution.facets.indexOf(facet);
@@ -136,7 +138,8 @@ export const PlanPilotSolutionZ = object({
         context.addIssue({
           code: ZodIssueCode.custom,
           path: ["facets", sourceIndex, "parentId"],
-          message: "Solution parentId must reference the previous solution facet.",
+          message:
+            "Solution parentId must reference the previous solution facet.",
         });
       }
     }
@@ -166,9 +169,11 @@ export const CreatePlanPilotSessionRequestZ = object({
     system: zenum(["IPEXCO"]),
     runId: string().optional(),
     projectId: string().optional(),
-    iterationStepId: string().optional().describe(
-      "Legacy source metadata; project-based PlanPilot sessions do not set it.",
-    ),
+    iterationStepId: string()
+      .optional()
+      .describe(
+        "Legacy source metadata; project-based PlanPilot sessions do not set it.",
+      ),
   }),
 });
 export type CreatePlanPilotSessionRequest = zinfer<
@@ -246,11 +251,13 @@ export const PlanPilotSelectionMutationResponseZ = object({
   solution: PlanPilotSolutionZ,
   facets: array(PlanPilotFacetZ),
 });
-export const SelectPlanPilotFacetResponseZ = PlanPilotSelectionMutationResponseZ;
+export const SelectPlanPilotFacetResponseZ =
+  PlanPilotSelectionMutationResponseZ;
 export type SelectPlanPilotFacetResponse = zinfer<
   typeof SelectPlanPilotFacetResponseZ
 >;
-export const ApplyPlanPilotFacetsResponseZ = PlanPilotSelectionMutationResponseZ;
+export const ApplyPlanPilotFacetsResponseZ =
+  PlanPilotSelectionMutationResponseZ;
 export type ApplyPlanPilotFacetsResponse = zinfer<
   typeof ApplyPlanPilotFacetsResponseZ
 >;
@@ -295,8 +302,8 @@ export const PlanPilotQueryResultZ = object({
   forbid: PlanPilotSelectionImpactDirectionZ.optional(),
 }).superRefine((result, context) => {
   if (
-    (result.type === "facetCount" || result.type === "solutionCount")
-    && result.value === undefined
+    (result.type === "facetCount" || result.type === "solutionCount") &&
+    result.value === undefined
   ) {
     context.addIssue({
       code: ZodIssueCode.custom,
@@ -314,8 +321,8 @@ export const PlanPilotQueryResultZ = object({
   if (
     ["facets", "facetReduction", "impliedFacets", "solutionReduction"].includes(
       result.type,
-    )
-    && result.facets === undefined
+    ) &&
+    result.facets === undefined
   ) {
     context.addIssue({
       code: ZodIssueCode.custom,
@@ -331,15 +338,13 @@ export const PlanPilotQueryResultZ = object({
     });
   }
   if (
-    result.type === "selectionImpact"
-    && (
-      result.facetId === undefined
-      || result.exact === undefined
-      || result.comparableToCurrent === undefined
-      || result.totalPlans === undefined
-      || result.require === undefined
-      || result.forbid === undefined
-    )
+    result.type === "selectionImpact" &&
+    (result.facetId === undefined ||
+      result.exact === undefined ||
+      result.comparableToCurrent === undefined ||
+      result.totalPlans === undefined ||
+      result.require === undefined ||
+      result.forbid === undefined)
   ) {
     context.addIssue({
       code: ZodIssueCode.custom,
@@ -373,9 +378,14 @@ export type PlanPilotQueryResult = zinfer<typeof PlanPilotQueryResultZ>;
 
 export const QueryPlanPilotSessionRequestZ = object({
   type: PlanPilotQueryTypeZ,
-  solutionNumber: number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  solutionNumber: number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
   solutionMode: zenum(["single", "prefix"]).optional(),
   facetId: string().trim().min(1).optional(),
+  timeoutSeconds: number().int().min(5).max(300).optional(),
 }).superRefine((request, context) => {
   if (request.type !== "solution" && request.solutionNumber !== undefined) {
     context.addIssue({
@@ -452,3 +462,130 @@ export const StopPlanPilotSessionResponseZ = object({
 export type StopPlanPilotSessionResponse = zinfer<
   typeof StopPlanPilotSessionResponseZ
 >;
+
+export const PlanPilotQueryJobTypeZ = zenum([
+  "solution",
+  "solutionCount",
+  "selectionImpact",
+]);
+
+export const PlanPilotCapabilitiesZ = object({
+  apiVersion: string().trim().min(1),
+  maxHorizon: number().int().positive().safe(),
+  maxActiveSessions: number().int().positive().safe(),
+  maxConcurrentCreations: number().int().positive().safe(),
+  sessionTtlSeconds: number().int().positive().safe(),
+  maxCachedSolutions: number().int().positive().safe(),
+  defaultQueryTimeoutSeconds: number().int().min(5).max(300).optional(),
+  maxQueryTimeoutSeconds: number().int().min(5).max(300).optional(),
+  encodings: array(PlanPilotEncodingZ).min(1),
+  supportsAbstractTimeSteps: boolean(),
+  supportsStateFacets: boolean(),
+  supportsAsyncJobs: boolean(),
+  asyncJobTypes: array(PlanPilotQueryJobTypeZ).min(1).optional(),
+});
+export type PlanPilotCapabilities = zinfer<typeof PlanPilotCapabilitiesZ>;
+
+export const PlanPilotQueryJobStatusZ = zenum([
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
+
+export const StartPlanPilotQueryJobRequestZ = object({
+  type: PlanPilotQueryJobTypeZ,
+  facetId: string().trim().min(1).optional(),
+  solutionStart: number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  solutionNumber: number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  expectedSelectionRevision: number().int().nonnegative().safe().optional(),
+  timeoutSeconds: number().int().min(5).max(300).optional(),
+}).superRefine((request, context) => {
+  if (request.type === "selectionImpact" && request.facetId === undefined) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["facetId"],
+      message: "facetId is required for selectionImpact jobs.",
+    });
+  }
+  if (request.type !== "selectionImpact" && request.facetId !== undefined) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["facetId"],
+      message: "facetId is only supported for selectionImpact jobs.",
+    });
+  }
+  if (request.type === "solution" && request.solutionNumber === undefined) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["solutionNumber"],
+      message: "solutionNumber is required for solution jobs.",
+    });
+  }
+  if (request.type !== "solution" && request.solutionNumber !== undefined) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["solutionNumber"],
+      message: "solutionNumber is only supported for solution jobs.",
+    });
+  }
+  if (request.type !== "solution" && request.solutionStart !== undefined) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["solutionStart"],
+      message: "solutionStart is only supported for solution jobs.",
+    });
+  }
+  if (
+    request.solutionStart !== undefined &&
+    request.solutionNumber !== undefined &&
+    request.solutionStart > request.solutionNumber
+  ) {
+    context.addIssue({
+      code: ZodIssueCode.custom,
+      path: ["solutionStart"],
+      message: "solutionStart cannot be greater than solutionNumber.",
+    });
+  }
+});
+export type StartPlanPilotQueryJobRequest = zinfer<
+  typeof StartPlanPilotQueryJobRequestZ
+>;
+
+export const PlanPilotQueryJobZ = object({
+  jobId: string().trim().min(1),
+  expiresAt: string().datetime({ offset: true }),
+  type: PlanPilotQueryJobTypeZ,
+  status: PlanPilotQueryJobStatusZ,
+  selectionRevision: number().int().nonnegative().safe(),
+  facetId: string().trim().min(1).optional(),
+  solutionStart: number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  solutionNumber: number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .optional(),
+  timeoutSeconds: number().int().min(5).max(300).optional(),
+  createdAt: string().datetime({ offset: true }),
+  startedAt: string().datetime({ offset: true }).optional(),
+  completedAt: string().datetime({ offset: true }).optional(),
+  result: PlanPilotQueryResultZ.optional(),
+  error: object({
+    code: string().trim().min(1),
+    message: string().trim().min(1),
+  }).optional(),
+});
+export type PlanPilotQueryJob = zinfer<typeof PlanPilotQueryJobZ>;

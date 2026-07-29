@@ -42,7 +42,7 @@ export async function resolvePlanPilotSource(
     user: userId,
   });
   if (!project) {
-    res.status(404).send({ message: "Project not found." });
+    sendPlanPilotApiError(res, 404, "PROJECT_NOT_FOUND", "Project not found.");
     return null;
   }
 
@@ -133,12 +133,22 @@ export async function getRunContext(
   } = {},
 ): Promise<PlanPilotRunContext | PlanPilotTerminalRunContext | null> {
   if (!req.user) {
-    res.status(401).send();
+    sendPlanPilotApiError(
+      res,
+      401,
+      "UNAUTHORIZED",
+      "Authentication is required.",
+    );
     return null;
   }
 
   if (!/^[a-f\d]{24}$/i.test(req.params.id)) {
-    res.status(400).send({ message: "Invalid PlanPilot run ID." });
+    sendPlanPilotApiError(
+      res,
+      400,
+      "INVALID_RUN_ID",
+      "Invalid PlanPilot run ID.",
+    );
     return null;
   }
 
@@ -147,7 +157,12 @@ export async function getRunContext(
     user: req.user._id,
   });
   if (!run) {
-    res.status(404).send({ message: "PlanPilot run not found." });
+    sendPlanPilotApiError(
+      res,
+      404,
+      "PLANPILOT_RUN_NOT_FOUND",
+      "PlanPilot run not found.",
+    );
     return null;
   }
 
@@ -160,22 +175,42 @@ export async function getRunContext(
   }
 
   if (!options.allowTerminal && run.status === PlanPilotRunStatus.STOPPED) {
-    res.status(409).send({ message: "PlanPilot run is already stopped." });
+    sendPlanPilotApiError(
+      res,
+      409,
+      "PLANPILOT_RUN_STOPPED",
+      "PlanPilot run is already stopped.",
+    );
     return null;
   }
 
   if (!options.allowTerminal && run.status === PlanPilotRunStatus.EXPIRED) {
-    res.status(410).send({ message: "PlanPilot run has expired." });
+    sendPlanPilotApiError(
+      res,
+      410,
+      "PLANPILOT_RUN_EXPIRED",
+      "PlanPilot run has expired.",
+    );
     return null;
   }
 
   if (!options.allowTerminal && run.status === PlanPilotRunStatus.FAILED) {
-    res.status(409).send({ message: "PlanPilot run has failed." });
+    sendPlanPilotApiError(
+      res,
+      409,
+      "PLANPILOT_RUN_FAILED",
+      "PlanPilot run has failed.",
+    );
     return null;
   }
 
   if (!options.allowTerminal && !run.externalSessionId) {
-    res.status(409).send({ message: "PlanPilot run is not ready." });
+    sendPlanPilotApiError(
+      res,
+      409,
+      "PLANPILOT_RUN_NOT_READY",
+      "PlanPilot run is not ready.",
+    );
     return null;
   }
 
@@ -192,9 +227,12 @@ export async function getRunContext(
 
   const service = await ServiceModel.findById(run.service);
   if (!service || service.type !== ServiceType.PLANPILOT) {
-    res
-      .status(400)
-      .send({ message: "PlanPilot service for this run is not available." });
+    sendPlanPilotApiError(
+      res,
+      400,
+      "PLANPILOT_SERVICE_UNAVAILABLE",
+      "PlanPilot service for this run is not available.",
+    );
     return null;
   }
 
@@ -336,15 +374,38 @@ export function sendPlanPilotRouteError(
     if (error.retryAfter && /^\d+$/.test(error.retryAfter)) {
       res.set("Retry-After", error.retryAfter);
     }
-    res.status(error.status ?? 502).send({
-      message: error.message,
-      code: error.code ?? "PLANPILOT_FAILED",
-    });
+    sendPlanPilotApiError(
+      res,
+      error.status ?? 502,
+      error.code ?? "PLANPILOT_FAILED",
+      error.message,
+    );
     return;
   }
 
   console.error("PlanPilot route failed:", error);
-  res.status(500).send();
+  sendPlanPilotApiError(
+    res,
+    500,
+    "PLANPILOT_FAILED",
+    "PlanPilot request failed.",
+  );
+}
+
+export function sendPlanPilotApiError(
+  res: express.Response,
+  status: number,
+  code: string,
+  message: string,
+  details?: unknown,
+): void {
+  res.status(status).send({
+    error: {
+      code,
+      message,
+      ...(details === undefined ? {} : { details }),
+    },
+  });
 }
 
 function isExpiredDate(value: unknown): boolean {
