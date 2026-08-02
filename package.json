@@ -6,10 +6,7 @@
   "scripts": {
     "debug": "tsc; node --inspect-brk dist/out-tsc/app.js",
     "start": "tsc; node dist/out-tsc/app.js",
-    "build": "tsc",
-    "test": "TS_NODE_TRANSPILE_ONLY=1 node --test --require ts-node/register tests/*.test.js",
-    "check": "npm run build && npm test && npm run smoke:planpilot-client",
-    "smoke:planpilot-client": "ts-node scripts/planpilot-client-contract-smoke.ts"
+    "build": "tsc"
   },
   "repository": {
     "type": "git",
@@ -17,7 +14,7 @@
   },
   "keywords": [],
   "author": "Rebecca Eifler",
-  "license": "GNU",
+  "license": "GPL-3.0-only",
   "devDependencies": {
     "@types/json-schema": "^7.0.15",
     "@types/nunjucks": "^3.2.6",

@@ -6,7 +6,7 @@ Unless you want to change/update the backend service, we suggest running
 the planner in a docker container. 
 We provide a pre-build docker image on DockerHub: `eifler/ipexco-backend`
 
-If you want to build your own docker image tun
+If you want to build your own Docker image, run:
 
 ```
 docker build -t ipexco-backend .
@@ -24,10 +24,10 @@ The dependencies are:
 - `node.js` version 22 (https://nodejs.org/en)
 
 
-Before first run install npm packages with:
+Before the first run, install the locked npm dependencies with:
 
 ```
-npm install
+npm ci
 ```
 
 ## Environment
@@ -45,8 +45,8 @@ The back-end requires the following environment variables to run:
     users
 - `SERVICE_KEY`: a random string that is used to authenticate any registered 
     services, e.g. planner 
-- `PDDLPARSER=utils/pddl_parser/` the past to the in the `utils` submodule contained 
-    PDDL parser
+- `PDDLPARSER=utils/pddl_parser/` the path to the PDDL parser contained in the
+    `utils` submodule
 - `UPLOADPATH` a path to a local folder in with the uploaded images can be stored
 
 Optional environment variables:
