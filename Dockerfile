@@ -1,9 +1,9 @@
-FROM ubuntu:noble
+FROM ubuntu:noble@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends python3 python3-pip curl ca-certificates && \
-    python3 -m pip install --break-system-packages setuptools unified-planning && \
+    python3 -m pip install --break-system-packages setuptools==68.1.2 unified-planning==1.3.0 && \
     rm -rf /var/lib/apt/lists/*
 
 # demo builder and plan-property plan checker
