@@ -2,9 +2,9 @@
 
 ## Docker Image
 
-Unless you want to change/update the backend service, we suggest running 
-the planner in a docker container. 
-We provide a pre-build docker image on DockerHub: `eifler/ipexco-backend`
+Unless you want to change the backend service, we suggest running it in a
+Docker container.
+We provide a pre-built Docker image on DockerHub: `eifler/ipexco-backend`
 
 If you want to build your own Docker image, run:
 
@@ -47,7 +47,7 @@ The back-end requires the following environment variables to run:
     services, e.g. planner 
 - `PDDLPARSER=utils/pddl_parser/` the path to the PDDL parser contained in the
     `utils` submodule
-- `UPLOADPATH` a path to a local folder in with the uploaded images can be stored
+- `UPLOADPATH` a path to a local folder where uploaded images can be stored
 
 Optional environment variables:
 
@@ -68,6 +68,6 @@ npm start
 
 ## Platform Usage
 
-For instruction on how to use the platform we refer to the 
-[README](https://github.com/r-eifler/IPEXCO-frontend/blob/dev/README.md) of the 
+For instructions on how to use the platform we refer to the
+[README](https://github.com/VictorMerk/IPEXCO-frontend/blob/dev/README.md) of the
 front-end repository.
