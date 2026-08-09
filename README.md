@@ -66,6 +66,15 @@ Optional environment variables:
 npm start
 ```
 
+### PlanPilot checks
+
+The focused back-end checks build the project and test the PlanPilot client,
+run identity, project ownership filters and service selection:
+
+```bash
+npm run test:planpilot
+```
+
 ## Platform Usage
 
 For instructions on how to use the platform we refer to the

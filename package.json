@@ -6,7 +6,8 @@
   "scripts": {
     "debug": "tsc; node --inspect-brk dist/out-tsc/app.js",
     "start": "tsc; node dist/out-tsc/app.js",
-    "build": "tsc"
+    "build": "tsc",
+    "test:planpilot": "npm run build && node --test dist/out-tsc/tests/planpilot/*.test.js"
   },
   "repository": {
     "type": "git",
